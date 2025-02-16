@@ -92,15 +92,27 @@ function mergeSSTables(thisLevel, nextLevel, events = null) {
         (table1.minKey <= table2.maxKey && table1.maxKey >= table2.minKey);
     
     // Process each table from thisLevel
-    thisLevel.forEach(thisTable => {
+    thisLevel.forEach((thisTable, i) => {
         // Find all overlapping tables from resultLevel
         const overlappingTables = resultLevel.filter(nextTable => 
             tablesOverlap(thisTable, nextTable)
         );
         
         emitEvent('mergeGroupFound', {
-            sourceTable: thisTable,
-            overlappingTables: overlappingTables
+            sourceTable: {
+                table: thisTable,
+                level: 0,  // thisLevel is always level 0
+                index: i   // from the forEach index
+            },
+            overlappingTables: overlappingTables.map((table, idx) => ({
+                table: table,
+                level: 1,  // nextLevel is always level 1
+                index: resultLevel.indexOf(table)  // get original index in resultLevel
+            })),
+            allTablesInLevel: {
+                level0: thisLevel.length,
+                level1: resultLevel.length
+            }
         });
         
         if (overlappingTables.length === 0) {
@@ -292,21 +304,8 @@ class LSMTree {
 
         const mergedSSTables = mergeSSTables(this.levels[level], this.levels[level + 1], this.events);
 
-        this.events.emit('mergeComplete', {
-            sourceLevel: level,
-            targetLevel: level + 1,
-            mergedElements: [...mergedSSTables]
-        });
-
-        // Update state
         this.levels[level] = [];
         this.levels[level + 1] = mergedSSTables;
-
-        this.events.emit('flushComplete', {
-            sourceLevel: level,
-            targetLevel: level + 1,
-            newState: this.getSnapshot()
-        });
 
         if (
             level + 1 < this.levels.length - 1 && 
@@ -349,22 +348,33 @@ class LSMTreeVisualizer {
         this.tree.events.on('mergeComplete', this.handleMergeComplete.bind(this));
         this.tree.events.on('flushComplete', this.handleFlushComplete.bind(this));
         this.tree.events.on('memtableFlushed', this.handleMemtableFlushed.bind(this));
+        this.tree.events.on('mergeGroupFound', this.handleMergeGroupFound.bind(this));
     }
 
     setupLayout() {
         const width = parseInt(this.svg.style("width"));
-        const margin = { top: 20, right: 20, bottom: 20, left: 60 };
+        const margin = { top: 20, right: 20, bottom: 20, left: 20 };
+        const labelHeight = 12; // reduced to 12 (from 25)
 
         // Add level labels
         this.svg.selectAll(".level-label")
-            .data(["Memory Buffer", "Disk Level 1", "Disk Level 2"])
+            .data(["Memtable", "Level 0", "Level 1"])
             .enter()
             .append("text")
             .attr("class", "level-label")
-            .attr("x", margin.left - 10)
-            .attr("y", (d, i) => margin.top + (i * this.config.levelHeight) + this.config.elementSize)
-            .attr("text-anchor", "end")
+            .attr("x", margin.left)  // align with left margin
+            .attr("y", (d, i) => margin.top + (i * this.config.levelHeight))  // position at top of each section
+            .attr("text-anchor", "start")
             .text(d => d);
+
+        // Update element positioning to start below labels
+        this.config.margin = {
+            top: margin.top + labelHeight, // offset elements below label
+            left: margin.left,
+            right: margin.right,
+            bottom: margin.bottom
+        };
+        this.config.levelHeight = 45; // total height including label and elements
     }
 
     async handleBeforeMemtableInsert(data) {
@@ -479,7 +489,7 @@ class LSMTreeVisualizer {
             // Animate the entire group moving down
             await new Promise(resolve => {
                 memtableGroup.transition()
-                    .duration(1000)
+                    .duration(500)
                     .attr("transform", `translate(${level0X}, ${level0Y})`)
                     .on("end", resolve);
             });
@@ -644,15 +654,37 @@ class LSMTreeVisualizer {
             .classed("merging", true);
         return new Promise(resolve => setTimeout(resolve, 500));
     }
+
+    async handleMergeGroupFound(data) {
+        await this.animationQueue.add(async () => {
+            // Remove any existing highlights first
+            this.svg.selectAll(".merging").classed("merging", false);
+            
+            // Highlight source table
+            this.svg.selectAll(`.level-${data.sourceTable.level} circle`)
+                .filter((d, i, nodes) => i === data.sourceTable.index)
+                .classed("merging", true);
+            
+            // Highlight overlapping tables
+            data.overlappingTables.forEach(table => {
+                this.svg.selectAll(`.level-${table.level} circle`)
+                    .filter((d, i, nodes) => i === table.index)
+                    .classed("merging", true);
+            });
+            
+            // Pause briefly to show the highlighting
+            await new Promise(resolve => setTimeout(resolve, 500));
+        });
+    }
 }
 
 // 5. Configuration and Setup
 const config = {
     maxMemtableSize: 4,
     maxElementsPerLevel: [4, 8, 16],
-    elementSize: 40,
-    levelHeight: 120,
-    margin: { top: 20, right: 20, bottom: 20, left: 60 },
+    elementSize: 15,  // reduced to 15 (from 30)
+    levelHeight: 45,  // reduced to 45 (from 90)
+    margin: { top: 20, right: 20, bottom: 20, left: 20 },
     print: true,
 };
 

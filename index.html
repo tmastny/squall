@@ -27,14 +27,22 @@
             padding: 16px;
             background: white;
         }
-        .level-label { font-size: 14px; font-weight: 600; fill: #4a5568; }
+        .level-label {
+            font-size: 10px;
+            font-weight: bold;
+            fill: #666;
+        }
         .memory-buffer { fill: #9ae6b4; stroke: #38a169; }
         .disk-level { fill: #90cdf4; stroke: #3182ce; }
-        .merging { fill: #fbd38d; stroke: #d69e2e; }
+        .merging {
+            stroke: #ff6b6b;
+            stroke-width: 3px;
+            filter: drop-shadow(0 0 3px rgba(255, 107, 107, 0.5));
+        }
         .sstable-background {
             fill: rgba(200, 200, 200, 0.1);
             stroke: #666;
-            stroke-width: 2;
+            stroke-width: 1px;
         }
 
         .level-group-level0 .memory-buffer {
@@ -47,7 +55,11 @@
 
         .element text {
             fill: black;
-            font-size: 12px;
+            font-size: 8px;
+        }
+
+        .element {
+            margin-right: 3px;
         }
     </style>
 </head>

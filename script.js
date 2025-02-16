@@ -526,10 +526,57 @@ const lsmTree = new LSMTree(config);
 const visualizer = new LSMTreeVisualizer(lsmTree, "#lsm-svg", config);
 
 // Wire up UI controls
+const demoSequence = [
+    // First batch - will form first SSTable in level 0
+    { key: 10, value: 'a' },
+    { key: 20, value: 'b' },
+    
+    // Second batch - will form second SSTable in level 0
+    { key: 30, value: 'c' },
+    { key: 40, value: 'd' },
+    
+    // Third batch - overlaps with first SSTable, updates values
+    { key: 15, value: 'e' },
+    { key: 20, value: 'f' },  // overwrites 20:b
+    
+    // Fourth batch - creates new range
+    { key: 50, value: 'g' },
+    { key: 60, value: 'h' },
+    
+    // Fifth batch - fills gaps
+    { key: 25, value: 'i' },
+    { key: 35, value: 'j' },
+
+    // Sixth batch - random updates to existing keys
+    { key: 15, value: 'k' },  // overwrites 15:e
+    { key: 35, value: 'l' },  // overwrites 35:j
+    
+    // Seventh batch - new range with some randomness
+    { key: 42, value: 'm' },
+    { key: 47, value: 'n' },
+    
+    // Eighth batch - more updates and new keys
+    { key: 20, value: 'o' },  // overwrites 20:f
+    { key: 55, value: 'p' },  // between 50 and 60
+    
+    // Ninth batch - fill more gaps
+    { key: 12, value: 'q' },  // between 10 and 15
+    { key: 38, value: 'r' },  // between 35 and 40
+    
+    // Tenth batch - one more round of updates
+    { key: 40, value: 's' },  // overwrites 40:d
+    { key: 50, value: 't' }   // overwrites 50:g
+];
+
+let currentIndex = 0;
 document.getElementById("insertBtn").addEventListener("click", () => {
-    const key = Math.floor(Math.random() * 100);
-    const value = String.fromCharCode(97 + Math.floor(Math.random() * 26));  // a-z
-    lsmTree.insert(key, value);
+    if (currentIndex < demoSequence.length) {
+        const { key, value } = demoSequence[currentIndex++];
+        console.log(`Inserting ${key}:${value} (${currentIndex}/${demoSequence.length})`);
+        lsmTree.insert(key, value);
+    } else {
+        console.log("Demo sequence complete!");
+    }
 });
 
 document.getElementById("flushBtn").addEventListener("click", () => {

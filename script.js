@@ -76,115 +76,97 @@ class SSTable {
     }
 }
 
-function compactLevel0(sstables) {
-    if (sstables.length === 0) return [];
-    
-    // Sort SSTables by minKey to make initial grouping easier
-    const sorted = [...sstables].sort((a, b) => a.minKey - b.minKey);
-    
-    // Find all overlapping groups
-    const groups = [];
-    let currentGroup = [sorted[0]];
-    
-    // Helper to check if a table overlaps with any table in the group
-    const overlapsWithGroup = (sst, group) => {
-        return group.some(existing => 
-            (sst.minKey <= existing.maxKey && sst.maxKey >= existing.minKey) ||
-            (existing.minKey <= sst.maxKey && existing.maxKey >= sst.minKey)
-        );
-    };
-    
-    // Group overlapping SSTables
-    for (let i = 1; i < sorted.length; i++) {
-        const current = sorted[i];
-        
-        if (overlapsWithGroup(current, currentGroup)) {
-            currentGroup.push(current);
-        } else {
-            // Before starting a new group, check if it overlaps with any existing group
-            const existingGroupIndex = groups.findIndex(group => overlapsWithGroup(current, group));
-            if (existingGroupIndex !== -1) {
-                // Merge current group with existing group
-                groups[existingGroupIndex] = [...groups[existingGroupIndex], ...currentGroup, current];
-            } else {
-                groups.push(currentGroup);
-                currentGroup = [current];
-            }
-        }
-    }
-    groups.push(currentGroup);
-    
-    // Merge each group into a single SSTable
-    return groups.map(group => {
-        // Create a Map to keep only the latest value for each key
-        const keyMap = new Map();
-        
-        // Process SSTables in reverse order (most recent first)
-        // This ensures we keep the most recent value for each key
-        [...group].reverse().flatMap(sst => sst.data).forEach(entry => {
-            if (!keyMap.has(entry.key)) {
-                keyMap.set(entry.key, entry);
-            }
-        });
-        
-        // Convert map back to sorted array
-        const allData = Array.from(keyMap.values()).sort(Entry.compare);
-        return new SSTable(allData);
-    });
-}
-
-function mergeSSTables(thisLevel, nextLevel) {
+function mergeSSTables(thisLevel, nextLevel, events = null) {
     if (thisLevel.length === 0) return nextLevel;
     if (nextLevel.length === 0) return thisLevel;
     
-    // Find overlapping groups between levels
-    const mergedTables = [];
+    const emitEvent = (eventName, data) => {
+        if (events) {
+            events.emit(eventName, data);
+        }
+    };
+    
+    let resultLevel = [...nextLevel];  // Work with a copy of nextLevel
     
     // Helper to check if tables overlap
     const tablesOverlap = (table1, table2) => 
         (table1.minKey <= table2.maxKey && table1.maxKey >= table2.minKey);
     
-    // For each table in nextLevel, find all overlapping tables from thisLevel
-    nextLevel.forEach(nextTable => {
-        const overlappingTables = thisLevel.filter(thisTable => 
+    // Process each table from thisLevel
+    thisLevel.forEach(thisTable => {
+        // Find all overlapping tables from resultLevel
+        const overlappingTables = resultLevel.filter(nextTable => 
             tablesOverlap(thisTable, nextTable)
         );
         
+        emitEvent('mergeGroupFound', {
+            sourceTable: thisTable,
+            overlappingTables: overlappingTables
+        });
+        
         if (overlappingTables.length === 0) {
-            // No overlaps, keep nextTable as is
-            mergedTables.push(nextTable);
+            // No overlaps, insert thisTable in order by minKey
+            const insertIndex = resultLevel.findIndex(table => table.minKey > thisTable.minKey);
+            if (insertIndex === -1) {
+                resultLevel.push(thisTable);
+            } else {
+                resultLevel.splice(insertIndex, 0, thisTable);
+            }
         } else {
-            // Merge overlapping tables
-            const keyMap = new Map();
+            // Start with thisTable and merge each overlapping table in order
+            let result = thisTable;
             
-            // First add all entries from nextTable
-            nextTable.data.forEach(entry => {
-                keyMap.set(entry.key, entry);
-            });
-            
-            // Then add entries from thisLevel tables (overwriting any duplicates)
-            overlappingTables.forEach(thisTable => {
-                thisTable.data.forEach(entry => {
-                    keyMap.set(entry.key, entry);
+            overlappingTables.forEach(nextTable => {
+                emitEvent('mergingTables', {
+                    older: result,
+                    newer: nextTable
                 });
+                
+                // Merge logic here
+                const merged = [];
+                let leftIdx = 0;  // result (older)
+                let rightIdx = 0;  // nextTable (newer)
+                
+                while (leftIdx < result.data.length || rightIdx < nextTable.data.length) {
+                    // If we've exhausted the right table, or left key is smaller
+                    if (rightIdx >= nextTable.data.length || 
+                        (leftIdx < result.data.length && 
+                         result.data[leftIdx].key < nextTable.data[rightIdx].key)) {
+                        merged.push(result.data[leftIdx]);
+                        leftIdx++;
+                    }
+                    // If we've exhausted the left table, or right key is smaller/equal
+                    else if (leftIdx >= result.data.length || 
+                             nextTable.data[rightIdx].key <= result.data[leftIdx].key) {
+                        merged.push(nextTable.data[rightIdx]);
+                        // Skip any duplicate keys in left table
+                        while (leftIdx < result.data.length && 
+                               result.data[leftIdx].key === nextTable.data[rightIdx].key) {
+                            leftIdx++;
+                        }
+                        rightIdx++;
+                    }
+                }
+                
+                result = new SSTable(merged);
             });
             
-            // Create new SSTable with merged data
-            const mergedData = Array.from(keyMap.values()).sort(Entry.compare);
-            mergedTables.push(new SSTable(mergedData));
+            // Remove the overlapped tables
+            resultLevel = resultLevel.filter(table => !overlappingTables.includes(table));
+            
+            // Insert merged result in order by minKey
+            const insertIndex = resultLevel.findIndex(table => table.minKey > result.minKey);
+            if (insertIndex === -1) {
+                resultLevel.push(result);
+            } else {
+                resultLevel.splice(insertIndex, 0, result);
+            }
         }
     });
     
-    // Add any tables from thisLevel that don't overlap with anything in nextLevel
-    thisLevel.forEach(thisTable => {
-        if (!nextLevel.some(nextTable => tablesOverlap(thisTable, nextTable))) {
-            mergedTables.push(thisTable);
-        }
-    });
-    
-    // Sort final tables by minKey
-    return mergedTables.sort((a, b) => a.minKey - b.minKey);
+    return resultLevel;
 }
+
 class LSMTree {
     constructor(config) {
         this.config = config;
@@ -276,11 +258,8 @@ class LSMTree {
             targetLevelState: [...this.levels[level + 1]]
         });
 
-        if (level === 0) {
-            this.levels[level] = compactLevel0(this.levels[level]);
-        }
 
-        const mergedSSTables = mergeSSTables(this.levels[level], this.levels[level + 1]);
+        const mergedSSTables = mergeSSTables(this.levels[level], this.levels[level + 1], this.events);
 
         this.events.emit('mergeComplete', {
             sourceLevel: level,
@@ -506,7 +485,6 @@ class LSMTreeVisualizer {
             await this.highlightLevelForMerge(data.targetLevel);
         });
     }
-
     async handleMergeComplete(data) {
         await this.animationQueue.add(async () => {
             // Calculate vertical positions
@@ -1009,12 +987,94 @@ async function testLSMTreeLevelMerge() {
     console.log("==================\n");
 }
 
+function testMergeSSTablesNew() {
+    console.log("=== Testing SSTable Level Merging ===");
+    
+    // Create test case from the example
+    const l0 = [
+        new SSTable([
+            new Entry(9, 'a'), 
+            new Entry(10, 'b'), 
+            new Entry(11, 'c')
+        ]),
+        new SSTable([
+            new Entry(12, 'd'), 
+            new Entry(13, 'e'), 
+            new Entry(14, 'f'),
+            new Entry(15, 'g')
+        ])
+    ];
+    
+    const l1 = [
+        new SSTable([
+            new Entry(8, 'h'), 
+            new Entry(9, 'i'), 
+            new Entry(10, 'j')
+        ]),
+        new SSTable([
+            new Entry(11, 'k'), 
+            new Entry(12, 'l'),
+            new Entry(13, 'm'),
+            new Entry(14, 'n'),
+            new Entry(15, 'o'),
+            new Entry(16, 'p')
+        ]),
+        new SSTable([
+            new Entry(20, 'q'), 
+            new Entry(21, 'r')
+        ])
+    ];
+    
+    console.log("Input L0:");
+    l0.forEach(sst => console.log(sst.toString()));
+    console.log("\nInput L1:");
+    l1.forEach(sst => console.log(sst.toString()));
+    
+    const merged = mergeSSTables(l0, l1);
+    
+    console.log("\nMerged Result:");
+    merged.forEach(sst => console.log(sst.toString()));
+    
+    // Verify the results
+    const expected = [
+        // First merged table (8-16)
+        new SSTable([
+            new Entry(8, 'h'),
+            new Entry(9, 'a'),
+            new Entry(10, 'b'),
+            new Entry(11, 'c'),
+            new Entry(12, 'd'),
+            new Entry(13, 'e'),
+            new Entry(14, 'f'),
+            new Entry(15, 'g'),
+            new Entry(16, 'p')
+        ]),
+        // Unchanged last table (20-21)
+        new SSTable([
+            new Entry(20, 'q'),
+            new Entry(21, 'r')
+        ])
+    ];
+    
+    const correct = merged.length === expected.length &&
+        merged.every((sst, i) => 
+            sst.minKey === expected[i].minKey &&
+            sst.maxKey === expected[i].maxKey &&
+            JSON.stringify(sst.data) === JSON.stringify(expected[i].data)
+        );
+    
+    console.log("\nTest result:", correct ? "PASSED" : "FAILED");
+    console.log("==================\n");
+}
+
 // Run all tests
 (async () => {
-    testCompactLevel0();
-    testCompactLevel02();
-    testCompactLevel0Simple();
+    // testCompactLevel0();
+    // testCompactLevel02();
+    // testCompactLevel0Simple();
     await testLSMTreeLevel0Compaction();
     await testLSMTreeMergeCompaction();
     await testLSMTreeLevelMerge();
+    await testMergeSSTablesNew();
 })();
+

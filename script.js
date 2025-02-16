@@ -78,7 +78,6 @@ class SSTable {
 
 function mergeSSTables(thisLevel, nextLevel, events = null) {
     if (thisLevel.length === 0) return nextLevel;
-    if (nextLevel.length === 0) return thisLevel;
     
     const emitEvent = (eventName, data) => {
         if (events) {
@@ -124,24 +123,56 @@ function mergeSSTables(thisLevel, nextLevel, events = null) {
                 
                 // Merge logic here
                 const merged = [];
-                let leftIdx = 0;  // result (older)
-                let rightIdx = 0;  // nextTable (newer)
+                let leftIdx = 0;  // nextTable (older)
+                let rightIdx = 0;  // result (newer)
                 
-                while (leftIdx < result.data.length || rightIdx < nextTable.data.length) {
-                    // If we've exhausted the right table, or left key is smaller
-                    if (rightIdx >= nextTable.data.length || 
-                        (leftIdx < result.data.length && 
-                         result.data[leftIdx].key < nextTable.data[rightIdx].key)) {
-                        merged.push(result.data[leftIdx]);
+                while (leftIdx < nextTable.data.length || rightIdx < result.data.length) {
+                    // If we've exhausted the newer table, or older key is smaller
+                    if (rightIdx >= result.data.length || 
+                        (leftIdx < nextTable.data.length && 
+                         nextTable.data[leftIdx].key < result.data[rightIdx].key)) {
+                        emitEvent('mergeStep', {
+                            type: 'takeLeft',
+                            entry: nextTable.data[leftIdx],
+                            leftTable: nextTable,
+                            rightTable: result,
+                            leftIndex: leftIdx,
+                            rightIndex: rightIdx,
+                            mergedSoFar: [...merged]
+                        });
+                        merged.push(nextTable.data[leftIdx]);
                         leftIdx++;
                     }
-                    // If we've exhausted the left table, or right key is smaller/equal
-                    else if (leftIdx >= result.data.length || 
-                             nextTable.data[rightIdx].key <= result.data[leftIdx].key) {
-                        merged.push(nextTable.data[rightIdx]);
-                        // Skip any duplicate keys in left table
-                        while (leftIdx < result.data.length && 
-                               result.data[leftIdx].key === nextTable.data[rightIdx].key) {
+                    // If we've exhausted the older table, or newer key is smaller/equal
+                    else if (leftIdx >= nextTable.data.length || 
+                             result.data[rightIdx].key <= nextTable.data[leftIdx].key) {
+                        if (leftIdx < nextTable.data.length && 
+                            result.data[rightIdx].key === nextTable.data[leftIdx].key) {
+                            emitEvent('mergeStep', {
+                                type: 'takeRightOverwrite',
+                                newEntry: result.data[rightIdx],
+                                oldEntry: nextTable.data[leftIdx],
+                                leftTable: nextTable,
+                                rightTable: result,
+                                leftIndex: leftIdx,
+                                rightIndex: rightIdx,
+                                mergedSoFar: [...merged]
+                            });
+                        } else {
+                            emitEvent('mergeStep', {
+                                type: 'takeRight',
+                                entry: result.data[rightIdx],
+                                leftTable: nextTable,
+                                rightTable: result,
+                                leftIndex: leftIdx,
+                                rightIndex: rightIdx,
+                                mergedSoFar: [...merged]
+                            });
+                        }
+                        merged.push(result.data[rightIdx]);
+                        // Skip any duplicate keys in older table
+                        while (leftIdx < nextTable.data.length && 
+                               nextTable.data[leftIdx].key === result.data[rightIdx].key) {
                             leftIdx++;
                         }
                         rightIdx++;
@@ -817,8 +848,8 @@ function testCompactLevel0Simple() {
     console.log("==================\n");
 }
 
-async function testLSMTreeLevel0Compaction() {
-    console.log("=== Testing LSM Tree Level 0 Compaction ===");
+async function testLSMTreeDeepLevelMerge() {
+    console.log("=== Testing LSM Tree Deep Level Merge ===");
     
     // Create LSM tree with small sizes to force compaction
     const testConfig = {
@@ -848,7 +879,7 @@ async function testLSMTreeLevel0Compaction() {
     if (!tree.levels[1] || !tree.levels[1][0]) {
         console.log("\nTest result: FAILED - Level 1 is empty");
         console.log("==================\n");
-        return;
+        return false;
     }
     
     // Verify level 1 has the correct values (most recent wins)
@@ -869,6 +900,8 @@ async function testLSMTreeLevel0Compaction() {
     console.log("Actual level 1 data:", level1Data.map(e => e.toString()).join(', '));
     console.log("\nTest result:", correct ? "PASSED" : "FAILED");
     console.log("==================\n");
+    
+    return correct;
 }
 
 async function testLSMTreeMergeCompaction() {
@@ -907,7 +940,7 @@ async function testLSMTreeMergeCompaction() {
     if (!tree.levels[1] || !tree.levels[1][0]) {
         console.log("\nTest result: FAILED - Level 1 is empty");
         console.log("==================\n");
-        return;
+        return false;
     }
     
     // Verify level 1 has the correct values (most recent wins)
@@ -939,6 +972,8 @@ async function testLSMTreeMergeCompaction() {
     console.log("Actual level 1 data:", level1Data.map(e => e.toString()).join(', '));
     console.log("\nTest result:", correct ? "PASSED" : "FAILED");
     console.log("==================\n");
+    
+    return correct;
 }
 
 async function testLSMTreeLevelMerge() {
@@ -985,10 +1020,12 @@ async function testLSMTreeLevelMerge() {
     
     console.log("\nTest result:", correct ? "PASSED" : "FAILED");
     console.log("==================\n");
+    
+    return correct;
 }
 
 function testMergeSSTablesNew() {
-    console.log("=== Testing SSTable Level Merging ===");
+    console.log("=== Testing New SSTable Merge ===");
     
     // Create test case from the example
     const l0 = [
@@ -1065,16 +1102,31 @@ function testMergeSSTablesNew() {
     
     console.log("\nTest result:", correct ? "PASSED" : "FAILED");
     console.log("==================\n");
+    
+    return correct;
 }
 
 // Run all tests
 (async () => {
-    // testCompactLevel0();
-    // testCompactLevel02();
-    // testCompactLevel0Simple();
-    await testLSMTreeLevel0Compaction();
-    await testLSMTreeMergeCompaction();
-    await testLSMTreeLevelMerge();
-    await testMergeSSTablesNew();
+    const testResults = {
+        "LSM Tree Deep Level Merge": await testLSMTreeDeepLevelMerge(),
+        "LSM Tree Merge Compaction": await testLSMTreeMergeCompaction(),
+        "LSM Tree Level Merge": await testLSMTreeLevelMerge(),
+        "New SSTable Merge": await testMergeSSTablesNew()
+    };
+    
+    console.log("\n=== Test Summary ===");
+    let allPassed = true;
+    Object.entries(testResults).forEach(([testName, passed]) => {
+        console.log(`${testName}: ${passed ? "✅ PASSED" : "❌ FAILED"}`);
+        if (!passed) allPassed = false;
+    });
+    console.log("==================");
+    
+    if (!allPassed) {
+        console.error("Some tests failed!");
+    } else {
+        console.log("All tests passed!");
+    }
 })();
 

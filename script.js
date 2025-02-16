@@ -48,11 +48,24 @@ class AnimationQueue {
 }
 
 // 3. Core LSM Tree Logic
+class SSTable {
+    constructor(data) {
+        this.data = data;
+        this.minKey = this.data[0];
+        this.maxKey = this.data[this.data.length - 1];
+    }
+
+    // Helper method to get string representation
+    toString() {
+        return `[${this.minKey}-${this.maxKey}]: ${this.data.join(', ')}`;
+    }
+}
+
 class LSMTree {
     constructor(config) {
         this.config = config;
         this.memtable = [];  
-        this.levels = [[], []];  
+        this.levels = [[], []];  // Each level now holds SSTables instead of raw arrays
         this.events = new EventEmitter();
         this.busy = false;
     }
@@ -61,7 +74,8 @@ class LSMTree {
         console.log('\n=== LSM Tree State ===');
         console.log('Memtable:', this.memtable.join(', ') || '(empty)');
         this.levels.forEach((level, index) => {
-            console.log(`Disk Level ${index}:`, level.join(', ') || '(empty)');
+            console.log(`Disk Level ${index}:`, 
+                level.length ? level.map(sst => sst.toString()).join(' | ') : '(empty)');
         });
         console.log('==================\n');
     }
@@ -93,40 +107,37 @@ class LSMTree {
         if (this.busy) return;
         this.busy = true;
 
-        console.log('\nFlushing memtable to disk level 0...');
-        this.events.emit('flushStart', {
-            sourceLevel: 'memtable',
-            sourceLevelState: [...this.memtable],
-            targetLevel: 0,
-            targetLevelState: [...this.levels[0]]
-        });
+        try {
+            console.log('\nFlushing memtable to disk level 0...');
+            
+            // Create new SSTable from memtable
+            const newSSTable = new SSTable(this.memtable);
+            
+            this.events.emit('flushStart', {
+                sourceLevel: 'memtable',
+                sourceLevelState: [...this.memtable],
+                targetLevel: 0,
+                targetLevelState: this.levels[0].map(sst => sst.data).flat()
+            });
 
-        // Merge memtable into first disk level
-        const mergedElements = [...this.memtable, ...this.levels[0]]
-            .sort((a, b) => a - b);
+            if (this.levels[0].length === this.config.maxElementsPerLevel[0]) {
+                await this.flush(0);
+            }
+            this.levels[0].push(newSSTable);
+            
+            // Clear memtable
+            this.memtable = [];
 
-        this.events.emit('mergeComplete', {
-            sourceLevel: 'memtable',
-            targetLevel: 0,
-            mergedElements: [...mergedElements]
-        });
+            this.events.emit('flushComplete', {
+                sourceLevel: 'memtable',
+                targetLevel: 0,
+                newState: this.getSnapshot()
+            });
 
-        this.memtable = [];
-        this.levels[0] = mergedElements;
-
-        this.events.emit('flushComplete', {
-            sourceLevel: 'memtable',
-            targetLevel: 0,
-            newState: this.getSnapshot()
-        });
-
-        // print levels
-        if (this.levels[0].length > this.config.maxElementsPerLevel[0]) {
-            await this.flush(0);
+            this.printState();
+        } finally {
+            this.busy = false;
         }
-
-        this.printState();
-        this.busy = false;
     }
 
     async flush(level) {
@@ -172,7 +183,9 @@ class LSMTree {
     getSnapshot() {
         return {
             memtable: [...this.memtable],
-            levels: this.levels.map(level => [...level]),
+            levels: this.levels.map(level => 
+                level.map(sst => sst.data).flat()  // Flatten SSTables for visualization
+            ),
             timestamp: Date.now()
         };
     }

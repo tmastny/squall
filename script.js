@@ -185,7 +185,6 @@ function mergeSSTables(thisLevel, nextLevel) {
     // Sort final tables by minKey
     return mergedTables.sort((a, b) => a.minKey - b.minKey);
 }
-
 class LSMTree {
     constructor(config) {
         this.config = config;
@@ -447,7 +446,7 @@ class LSMTreeVisualizer {
                 .attr("y", bbox.y - padding)
                 .attr("width", bbox.width + (padding * 2))
                 .attr("height", bbox.height + (padding * 2))
-                .attr("rx", 5)  // Rounded corners
+                .attr("rx", 5)
                 .attr("ry", 5)
                 .style("fill", "none")
                 .style("stroke", "#666")
@@ -458,8 +457,14 @@ class LSMTreeVisualizer {
                 .style("opacity", 1);
             
             // Calculate target position in level 0
-            const level0Y = marginTop + this.config.levelHeight;  // One level down
-            const level0X = marginLeft + (level0State.length * (bbox.width + 20));  // Position after existing SSTables
+            const level0Y = marginTop + this.config.levelHeight;
+            
+            // Position directly at marginLeft if it's the first SSTable
+            // Otherwise, position after the last SSTable with minimal spacing
+            const existingLevel0Groups = this.svg.selectAll('.level-group-level0');
+            const level0X = existingLevel0Groups.empty() ? 
+                marginLeft : 
+                marginLeft + (level0State.length - 1) * (bbox.width + 40); // 40px spacing between SSTables
             
             // Animate the entire group moving down
             await new Promise(resolve => {

@@ -48,17 +48,36 @@ class AnimationQueue {
 }
 
 // 3. Core LSM Tree Logic
-class SSTable {
-    constructor(data) {
-        this.data = data;
-        this.minKey = this.data[0];
-        this.maxKey = this.data[this.data.length - 1];
+class Entry {
+    constructor(key, value) {
+        this.key = key;
+        this.value = value;
     }
 
-    // Helper method to get string representation
     toString() {
-        return `[${this.minKey}-${this.maxKey}]: ${this.data.join(', ')}`;
+        return `${this.key}:${this.value}`;
     }
+
+    // Static compare method for sorting
+    static compare(a, b) {
+        return a.key - b.key;
+    }
+}
+
+class SSTable {
+    constructor(entries) {
+        this.data = [...entries].sort(Entry.compare);  // Use the static compare method
+        this.minKey = this.data[0].key;
+        this.maxKey = this.data[this.data.length - 1].key;
+    }
+
+    toString() {
+        return `[${this.minKey}-${this.maxKey}]: ${this.data.map(e => e.toString()).join(', ')}`;
+    }
+}
+
+function compactLevel0(sstables) {
+    
 }
 
 function mergeSSTables(sstables) {
@@ -101,8 +120,14 @@ function mergeSSTables(sstables) {
     
     // Merge each group into a single SSTable
     return groups.map(group => {
-        // Use Set to deduplicate values
-        const allData = [...new Set(group.flatMap(sst => sst.data))].sort((a, b) => a - b);
+        // Create a Map to keep only the latest value for each key
+        const keyMap = new Map();
+        group.flatMap(sst => sst.data).forEach(entry => {
+            keyMap.set(entry.key, entry);
+        });
+        
+        // Convert map back to sorted array
+        const allData = Array.from(keyMap.values()).sort(Entry.compare);
         return new SSTable(allData);
     });
 }
@@ -110,15 +135,15 @@ function mergeSSTables(sstables) {
 class LSMTree {
     constructor(config) {
         this.config = config;
-        this.memtable = [];  
-        this.levels = [[], []];  // Each level now holds SSTables instead of raw arrays
+        this.memtable = [];  // Will hold Entry objects
+        this.levels = [[], []];  
         this.events = new EventEmitter();
         this.busy = false;
     }
 
     printState() {
         console.log('\n=== LSM Tree State ===');
-        console.log('Memtable:', this.memtable.join(', ') || '(empty)');
+        console.log('Memtable:', this.memtable.map(e => e.toString()).join(', ') || '(empty)');
         this.levels.forEach((level, index) => {
             console.log(`Disk Level ${index}:`, 
                 level.length ? level.map(sst => sst.toString()).join(' | ') : '(empty)');
@@ -126,21 +151,22 @@ class LSMTree {
         console.log('==================\n');
     }
 
-    async insert(value) {
+    async insert(key, value) {
         if (this.busy) return;
         
-        console.log(`\nInserting value: ${value}`);
-        this.events.emit('beforeInsert', { value, level: 'memtable' });
+        console.log(`\nInserting ${key}:${value}`);
+        this.events.emit('beforeInsert', { key, value, level: 'memtable' });
         
         if (this.memtable.length === this.config.maxMemtableSize) {
             console.log('Memtable full, triggering flush...');
             await this.flushMemtable();
         }
         
-        this.memtable.push(value);
-        this.memtable.sort((a, b) => a - b);
+        this.memtable.push(new Entry(key, value));
+        this.memtable.sort(Entry.compare);  // Use the static compare method
         
         this.events.emit('afterInsert', { 
+            key,
             value,
             level: 'memtable',
             levelState: this.memtable
@@ -438,8 +464,9 @@ const visualizer = new LSMTreeVisualizer(lsmTree, "#lsm-svg", config);
 
 // Wire up UI controls
 document.getElementById("insertBtn").addEventListener("click", () => {
+    const key = Math.floor(Math.random() * 100);
     const value = Math.floor(Math.random() * 100);
-    lsmTree.insert(value);
+    lsmTree.insert(key, value);
 });
 
 document.getElementById("flushBtn").addEventListener("click", () => {
@@ -452,10 +479,10 @@ function testMergeSSTables() {
     
     // Create test SSTables
     const tables = [
-        new SSTable([1, 2, 3]),
-        new SSTable([2, 3, 4]),
-        new SSTable([3, 4, 5]),
-        new SSTable([7, 8, 9])
+        new SSTable([new Entry(1, 'a'), new Entry(2, 'b'), new Entry(3, 'c')]),
+        new SSTable([new Entry(2, 'b'), new Entry(3, 'c'), new Entry(4, 'd')]),
+        new SSTable([new Entry(3, 'c'), new Entry(4, 'd'), new Entry(5, 'e')]),
+        new SSTable([new Entry(7, 'f'), new Entry(8, 'g'), new Entry(9, 'h')])
     ];
     
     console.log("Input SSTables:");
@@ -468,8 +495,11 @@ function testMergeSSTables() {
     
     // Verify results
     const expected = [
-        new SSTable([1, 2, 3, 4, 5]),
-        new SSTable([7, 8, 9])
+        new SSTable([
+            new Entry(1, 'a'), new Entry(2, 'b'), new Entry(3, 'c'),
+            new Entry(4, 'd'), new Entry(5, 'e')
+        ]),
+        new SSTable([new Entry(7, 'f'), new Entry(8, 'g'), new Entry(9, 'h')])
     ];
     
     const correct = merged.length === expected.length &&
@@ -488,11 +518,16 @@ function testMergeSSTables2() {
     
     // Create test SSTables
     const tables = [
-        new SSTable([44, 84]),
-        new SSTable([0]),
-        new SSTable([88]),
-        new SSTable([10]),
-        new SSTable([0, 26, 42, 44, 46, 54, 59, 65, 83, 96]),
+        new SSTable([new Entry(44, 'a'), new Entry(84, 'b')]),
+        new SSTable([new Entry(0, 'c')]),
+        new SSTable([new Entry(88, 'd')]),
+        new SSTable([new Entry(10, 'e')]),
+        new SSTable([
+            new Entry(0, 'c'), new Entry(26, 'f'), new Entry(42, 'g'),
+            new Entry(44, 'a'), new Entry(46, 'h'), new Entry(54, 'i'),
+            new Entry(59, 'j'), new Entry(65, 'k'), new Entry(83, 'l'),
+            new Entry(96, 'm')
+        ])
     ];
     
     console.log("Input SSTables:");
@@ -505,7 +540,13 @@ function testMergeSSTables2() {
     
     // Verify results
     const expected = [
-        new SSTable([0, 10, 26, 42, 44, 46, 54, 59, 65, 83, 84, 88, 96]),
+        new SSTable([
+            new Entry(0, 'c'), new Entry(10, 'e'), new Entry(26, 'f'),
+            new Entry(42, 'g'), new Entry(44, 'a'), new Entry(46, 'h'),
+            new Entry(54, 'i'), new Entry(59, 'j'), new Entry(65, 'k'),
+            new Entry(83, 'l'), new Entry(84, 'b'), new Entry(88, 'd'),
+            new Entry(96, 'm')
+        ])
     ];
     
     const correct = merged.length === expected.length &&

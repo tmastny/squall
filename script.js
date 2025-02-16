@@ -527,45 +527,50 @@ const visualizer = new LSMTreeVisualizer(lsmTree, "#lsm-svg", config);
 
 // Wire up UI controls
 const demoSequence = [
-    // First batch - will form first SSTable in level 0
+    // First batch - first range (10-20)
     { key: 10, value: 'a' },
-    { key: 20, value: 'b' },
+    { key: 15, value: 'b' },
+    { key: 20, value: 'c' },
     
-    // Second batch - will form second SSTable in level 0
-    { key: 30, value: 'c' },
+    // Second batch - second range (40-60)
     { key: 40, value: 'd' },
+    { key: 50, value: 'e' },
+    { key: 60, value: 'f' },
     
-    // Third batch - overlaps with first SSTable, updates values
-    { key: 15, value: 'e' },
-    { key: 20, value: 'f' },  // overwrites 20:b
+    // Third batch - third range (80-95)
+    { key: 80, value: 'g' },
+    { key: 85, value: 'h' },
+    { key: 95, value: 'i' },
     
-    // Fourth batch - creates new range
-    { key: 50, value: 'g' },
-    { key: 60, value: 'h' },
+    // Fourth batch - overlaps with first range, updates values
+    { key: 12, value: 'j' },
+    { key: 15, value: 'k' },  // overwrites 15:b
+    { key: 18, value: 'l' },
     
-    // Fifth batch - fills gaps
-    { key: 25, value: 'i' },
-    { key: 35, value: 'j' },
-
-    // Sixth batch - random updates to existing keys
-    { key: 15, value: 'k' },  // overwrites 15:e
-    { key: 35, value: 'l' },  // overwrites 35:j
+    // Fifth batch - fills some gaps
+    { key: 30, value: 'm' },  // between ranges
+    { key: 70, value: 'n' },  // between ranges
+    { key: 90, value: 'o' },  // in third range
     
-    // Seventh batch - new range with some randomness
-    { key: 42, value: 'm' },
-    { key: 47, value: 'n' },
+    // Sixth batch - more gap filling
+    { key: 45, value: 'p' },  // in second range
+    { key: 55, value: 'q' },  // in second range
+    { key: 75, value: 'r' },  // between ranges
     
-    // Eighth batch - more updates and new keys
-    { key: 20, value: 'o' },  // overwrites 20:f
-    { key: 55, value: 'p' },  // between 50 and 60
+    // Seventh batch - final updates
+    { key: 15, value: 's' },  // overwrites 15:k
+    { key: 50, value: 't' },  // overwrites 50:e
+    { key: 85, value: 'u' },  // overwrites 85:h
     
-    // Ninth batch - fill more gaps
-    { key: 12, value: 'q' },  // between 10 and 15
-    { key: 38, value: 'r' },  // between 35 and 40
+    // Eighth batch - last insertions
+    { key: 25, value: 'v' },  // between ranges
+    { key: 65, value: 'w' },  // between ranges
+    { key: 92, value: 'x' },  // in third range
     
-    // Tenth batch - one more round of updates
-    { key: 40, value: 's' },  // overwrites 40:d
-    { key: 50, value: 't' }   // overwrites 50:g
+    // Ninth batch - very last updates
+    { key: 18, value: 'y' },  // overwrites 18:l
+    { key: 75, value: 'z' },  // overwrites 75:r
+    { key: 92, value: 'a' }   // overwrites 92:x
 ];
 
 let currentIndex = 0;

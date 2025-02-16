@@ -61,6 +61,52 @@ class SSTable {
     }
 }
 
+function mergeSSTables(sstables) {
+    if (sstables.length === 0) return [];
+    
+    // Sort SSTables by minKey to make initial grouping easier
+    const sorted = [...sstables].sort((a, b) => a.minKey - b.minKey);
+    
+    // Find all overlapping groups
+    const groups = [];
+    let currentGroup = [sorted[0]];
+    
+    // Helper to check if a table overlaps with any table in the group
+    const overlapsWithGroup = (sst, group) => {
+        return group.some(existing => 
+            (sst.minKey <= existing.maxKey && sst.maxKey >= existing.minKey) ||
+            (existing.minKey <= sst.maxKey && existing.maxKey >= sst.minKey)
+        );
+    };
+    
+    // Group overlapping SSTables
+    for (let i = 1; i < sorted.length; i++) {
+        const current = sorted[i];
+        
+        if (overlapsWithGroup(current, currentGroup)) {
+            currentGroup.push(current);
+        } else {
+            // Before starting a new group, check if it overlaps with any existing group
+            const existingGroupIndex = groups.findIndex(group => overlapsWithGroup(current, group));
+            if (existingGroupIndex !== -1) {
+                // Merge current group with existing group
+                groups[existingGroupIndex] = [...groups[existingGroupIndex], ...currentGroup, current];
+            } else {
+                groups.push(currentGroup);
+                currentGroup = [current];
+            }
+        }
+    }
+    groups.push(currentGroup);
+    
+    // Merge each group into a single SSTable
+    return groups.map(group => {
+        // Use Set to deduplicate values
+        const allData = [...new Set(group.flatMap(sst => sst.data))].sort((a, b) => a - b);
+        return new SSTable(allData);
+    });
+}
+
 class LSMTree {
     constructor(config) {
         this.config = config;
@@ -120,6 +166,7 @@ class LSMTree {
                 targetLevelState: this.levels[0].map(sst => sst.data).flat()
             });
 
+            console.log(this.levels[0].length, this.config.maxElementsPerLevel[0]);
             if (this.levels[0].length === this.config.maxElementsPerLevel[0]) {
                 await this.flush(0);
             }
@@ -149,19 +196,17 @@ class LSMTree {
             targetLevelState: [...this.levels[level + 1]]
         });
 
-        // Merge operation
-        const mergedElements = [...this.levels[level], ...this.levels[level + 1]]
-            .sort((a, b) => a - b);
+        const mergedSSTables = mergeSSTables([...this.levels[level], ...this.levels[level + 1]]);
 
         this.events.emit('mergeComplete', {
             sourceLevel: level,
             targetLevel: level + 1,
-            mergedElements: [...mergedElements]
+            mergedElements: [...mergedSSTables]
         });
 
         // Update state
         this.levels[level] = [];
-        this.levels[level + 1] = mergedElements;
+        this.levels[level + 1] = mergedSSTables;
 
         this.events.emit('flushComplete', {
             sourceLevel: level,
@@ -381,7 +426,7 @@ class LSMTreeVisualizer {
 // 5. Configuration and Setup
 const config = {
     maxMemtableSize: 4,
-    maxElementsPerLevel: [8, 16, 24],
+    maxElementsPerLevel: [4, 8, 16],
     elementSize: 40,
     levelHeight: 120,
     margin: { top: 20, right: 20, bottom: 20, left: 60 }
@@ -400,3 +445,80 @@ document.getElementById("insertBtn").addEventListener("click", () => {
 document.getElementById("flushBtn").addEventListener("click", () => {
     lsmTree.flushMemtable();
 });
+
+// Test mergeSSTables function
+function testMergeSSTables() {
+    console.log("=== Testing SSTable Merging ===");
+    
+    // Create test SSTables
+    const tables = [
+        new SSTable([1, 2, 3]),
+        new SSTable([2, 3, 4]),
+        new SSTable([3, 4, 5]),
+        new SSTable([7, 8, 9])
+    ];
+    
+    console.log("Input SSTables:");
+    tables.forEach(sst => console.log(sst.toString()));
+    
+    const merged = mergeSSTables(tables);
+    
+    console.log("\nMerged SSTables:");
+    merged.forEach(sst => console.log(sst.toString()));
+    
+    // Verify results
+    const expected = [
+        new SSTable([1, 2, 3, 4, 5]),
+        new SSTable([7, 8, 9])
+    ];
+    
+    const correct = merged.length === expected.length &&
+        merged.every((sst, i) => 
+            sst.minKey === expected[i].minKey &&
+            sst.maxKey === expected[i].maxKey &&
+            JSON.stringify(sst.data) === JSON.stringify(expected[i].data)
+        );
+    
+    console.log("\nTest result:", correct ? "PASSED" : "FAILED");
+    console.log("==================\n");
+}
+
+function testMergeSSTables2() {
+    console.log("=== Testing SSTable Merging ===");
+    
+    // Create test SSTables
+    const tables = [
+        new SSTable([44, 84]),
+        new SSTable([0]),
+        new SSTable([88]),
+        new SSTable([10]),
+        new SSTable([0, 26, 42, 44, 46, 54, 59, 65, 83, 96]),
+    ];
+    
+    console.log("Input SSTables:");
+    tables.forEach(sst => console.log(sst.toString()));
+    
+    const merged = mergeSSTables(tables);
+    
+    console.log("\nMerged SSTables:");
+    merged.forEach(sst => console.log(sst.toString()));
+    
+    // Verify results
+    const expected = [
+        new SSTable([0, 10, 26, 42, 44, 46, 54, 59, 65, 83, 84, 88, 96]),
+    ];
+    
+    const correct = merged.length === expected.length &&
+        merged.every((sst, i) => 
+            sst.minKey === expected[i].minKey &&
+            sst.maxKey === expected[i].maxKey &&
+            JSON.stringify(sst.data) === JSON.stringify(expected[i].data)
+        );
+    
+    console.log("\nTest result:", correct ? "PASSED" : "FAILED");
+    console.log("==================\n");
+}
+
+// Run the test
+testMergeSSTables();
+testMergeSSTables2();

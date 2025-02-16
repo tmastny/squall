@@ -256,10 +256,9 @@ class LSMTree {
             
             this.memtable = [];
 
-            this.events.emit('flushComplete', {
-                sourceLevel: 'memtable',
-                targetLevel: 0,
-                newState: this.getSnapshot()
+            this.events.emit('memtableFlushed', {
+                memtableState: this.memtable,
+                level0State: this.levels[0]
             });
 
             if (this.config.print) {
@@ -340,6 +339,7 @@ class LSMTreeVisualizer {
         this.tree.events.on('flushStart', this.handleFlushStart.bind(this));
         this.tree.events.on('mergeComplete', this.handleMergeComplete.bind(this));
         this.tree.events.on('flushComplete', this.handleFlushComplete.bind(this));
+        this.tree.events.on('memtableFlushed', this.handleMemtableFlushed.bind(this));
     }
 
     setupLayout() {
@@ -419,6 +419,65 @@ class LSMTreeVisualizer {
                 .style("opacity", 1);
             
             await new Promise(resolve => setTimeout(resolve, 500));
+        });
+    }
+
+    async handleMemtableFlushed(data) {
+        await this.animationQueue.add(async () => {
+            const { memtableState, level0State } = data;
+            const elementSize = this.config.elementSize;
+            const marginLeft = this.config.margin.left;
+            const marginTop = this.config.margin.top;
+            
+            // Get the current memtable group
+            const memtableGroup = this.svg.select('.level-group-memtable');
+            if (memtableGroup.empty()) return;
+            
+            // Add a rectangle around the memtable group
+            const bbox = memtableGroup.node().getBBox();
+            const padding = 10;
+            
+            const sstableGroup = memtableGroup.append("g")
+                .attr("class", "sstable-group");
+                
+            // Add background rectangle
+            sstableGroup.append("rect")
+                .attr("class", "sstable-background")
+                .attr("x", bbox.x - padding)
+                .attr("y", bbox.y - padding)
+                .attr("width", bbox.width + (padding * 2))
+                .attr("height", bbox.height + (padding * 2))
+                .attr("rx", 5)  // Rounded corners
+                .attr("ry", 5)
+                .style("fill", "none")
+                .style("stroke", "#666")
+                .style("stroke-width", 2)
+                .style("opacity", 0)
+                .transition()
+                .duration(500)
+                .style("opacity", 1);
+            
+            // Calculate target position in level 0
+            const level0Y = marginTop + this.config.levelHeight;  // One level down
+            const level0X = marginLeft + (level0State.length * (bbox.width + 20));  // Position after existing SSTables
+            
+            // Animate the entire group moving down
+            await new Promise(resolve => {
+                memtableGroup.transition()
+                    .duration(1000)
+                    .attr("transform", `translate(${level0X}, ${level0Y})`)
+                    .on("end", resolve);
+            });
+            
+            // Change class to indicate it's now in level 0
+            memtableGroup
+                .classed("level-group-memtable", false)
+                .classed("level-group-level0", true);
+            
+            // Create new empty memtable group for future inserts
+            this.svg.append("g")
+                .attr("class", "level-group-memtable")
+                .attr("transform", `translate(0, ${marginTop})`);
         });
     }
 

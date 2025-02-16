@@ -77,7 +77,60 @@ class SSTable {
 }
 
 function compactLevel0(sstables) {
+    if (sstables.length === 0) return [];
     
+    // Sort SSTables by minKey to make initial grouping easier
+    const sorted = [...sstables].sort((a, b) => a.minKey - b.minKey);
+    
+    // Find all overlapping groups
+    const groups = [];
+    let currentGroup = [sorted[0]];
+    
+    // Helper to check if a table overlaps with any table in the group
+    const overlapsWithGroup = (sst, group) => {
+        return group.some(existing => 
+            (sst.minKey <= existing.maxKey && sst.maxKey >= existing.minKey) ||
+            (existing.minKey <= sst.maxKey && existing.maxKey >= sst.minKey)
+        );
+    };
+    
+    // Group overlapping SSTables
+    for (let i = 1; i < sorted.length; i++) {
+        const current = sorted[i];
+        
+        if (overlapsWithGroup(current, currentGroup)) {
+            currentGroup.push(current);
+        } else {
+            // Before starting a new group, check if it overlaps with any existing group
+            const existingGroupIndex = groups.findIndex(group => overlapsWithGroup(current, group));
+            if (existingGroupIndex !== -1) {
+                // Merge current group with existing group
+                groups[existingGroupIndex] = [...groups[existingGroupIndex], ...currentGroup, current];
+            } else {
+                groups.push(currentGroup);
+                currentGroup = [current];
+            }
+        }
+    }
+    groups.push(currentGroup);
+    
+    // Merge each group into a single SSTable
+    return groups.map(group => {
+        // Create a Map to keep only the latest value for each key
+        const keyMap = new Map();
+        
+        // Process SSTables in reverse order (most recent first)
+        // This ensures we keep the most recent value for each key
+        [...group].reverse().flatMap(sst => sst.data).forEach(entry => {
+            if (!keyMap.has(entry.key)) {
+                keyMap.set(entry.key, entry);
+            }
+        });
+        
+        // Convert map back to sorted array
+        const allData = Array.from(keyMap.values()).sort(Entry.compare);
+        return new SSTable(allData);
+    });
 }
 
 function mergeSSTables(sstables) {
@@ -154,11 +207,11 @@ class LSMTree {
     async insert(key, value) {
         if (this.busy) return;
         
-        console.log(`\nInserting ${key}:${value}`);
+        // console.log(`\nInserting ${key}:${value}`);
         this.events.emit('beforeInsert', { key, value, level: 'memtable' });
         
         if (this.memtable.length === this.config.maxMemtableSize) {
-            console.log('Memtable full, triggering flush...');
+            // console.log('Memtable full, triggering flush...');
             await this.flushMemtable();
         }
         
@@ -172,7 +225,7 @@ class LSMTree {
             levelState: this.memtable
         });
 
-        this.printState();
+        // this.printState();
     }
 
     async flushMemtable() {
@@ -180,7 +233,7 @@ class LSMTree {
         this.busy = true;
 
         try {
-            console.log('\nFlushing memtable to disk level 0...');
+            // console.log('\nFlushing memtable to disk level 0...');
             
             // Create new SSTable from memtable
             const newSSTable = new SSTable(this.memtable);
@@ -192,7 +245,6 @@ class LSMTree {
                 targetLevelState: this.levels[0].map(sst => sst.data).flat()
             });
 
-            console.log(this.levels[0].length, this.config.maxElementsPerLevel[0]);
             if (this.levels[0].length === this.config.maxElementsPerLevel[0]) {
                 await this.flush(0);
             }
@@ -207,14 +259,14 @@ class LSMTree {
                 newState: this.getSnapshot()
             });
 
-            this.printState();
+            // this.printState();
         } finally {
             this.busy = false;
         }
     }
 
     async flush(level) {
-        console.log(`\nFlushing disk level ${level} to level ${level + 1}...`);
+        // console.log(`\nFlushing disk level ${level} to level ${level + 1}...`);
         this.events.emit('flushStart', {
             sourceLevel: level,
             sourceLevelState: [...this.levels[level]],
@@ -248,7 +300,7 @@ class LSMTree {
             await this.flush(level + 1);
         }
 
-        this.printState();
+        // this.printState();
     }
 
     getSnapshot() {
@@ -465,7 +517,7 @@ const visualizer = new LSMTreeVisualizer(lsmTree, "#lsm-svg", config);
 // Wire up UI controls
 document.getElementById("insertBtn").addEventListener("click", () => {
     const key = Math.floor(Math.random() * 100);
-    const value = Math.floor(Math.random() * 100);
+    const value = String.fromCharCode(97 + Math.floor(Math.random() * 26));  // a-z
     lsmTree.insert(key, value);
 });
 
@@ -560,6 +612,103 @@ function testMergeSSTables2() {
     console.log("==================\n");
 }
 
-// Run the test
+function testCompactLevel0Simple() {
+    console.log("=== Testing Level 0 Compaction (Simple) ===");
+    
+    // Create test SSTables in order of insertion (oldest to newest)
+    const tables = [
+        new SSTable([new Entry(1, 'a'), new Entry(2, 'b')]),
+        new SSTable([new Entry(2, 'c'), new Entry(3, 'd')]),
+        new SSTable([new Entry(1, 'b')])  
+    ];
+    
+    console.log("Input SSTables (oldest to newest):");
+    tables.forEach(sst => console.log(sst.toString()));
+    
+    const compacted = compactLevel0(tables);
+    
+    console.log("\nCompacted SSTables:");
+    compacted.forEach(sst => console.log(sst.toString()));
+    
+    // Verify results - should keep newest values
+    const expected = [
+        new SSTable([
+            new Entry(1, 'b'),  // newest value for key 1
+            new Entry(2, 'c'),  // newest value for key 2
+            new Entry(3, 'd')   // newest value for key 3
+        ])
+    ];
+    
+    const correct = compacted.length === expected.length &&
+        compacted.every((sst, i) => 
+            sst.minKey === expected[i].minKey &&
+            sst.maxKey === expected[i].maxKey &&
+            JSON.stringify(sst.data) === JSON.stringify(expected[i].data)
+        );
+    
+    console.log("\nTest result:", correct ? "PASSED" : "FAILED");
+    console.log("==================\n");
+}
+
+async function testLSMTreeLevel0Compaction() {
+    console.log("=== Testing LSM Tree Level 0 Compaction ===");
+    
+    // Create LSM tree with small sizes to force compaction
+    const testConfig = {
+        maxMemtableSize: 2,  // Force frequent memtable flushes
+        maxElementsPerLevel: [2, 2, 2],  // Force level 0 compaction
+        elementSize: 40,
+        levelHeight: 120,
+        margin: { top: 20, right: 20, bottom: 20, left: 60 }
+    };
+    
+    const tree = new LSMTree(testConfig);
+    
+    // Insert sequence that will force compaction
+    await tree.insert(1, 'a');  
+    await tree.insert(2, 'b');  
+    await tree.insert(1, 'c');  
+    await tree.insert(3, 'd');  
+    await tree.insert(5, 'f');  
+    await tree.insert(6, 'g');  
+
+    console.log("\nBefore compact:");
+    tree.printState();
+
+    await tree.insert(7, 'h');  
+    
+    console.log("\nFinal state:");
+    tree.printState();
+    
+    // Check if level 1 exists and has data
+    if (!tree.levels[1] || !tree.levels[1][0]) {
+        console.log("\nTest result: FAILED - Level 1 is empty");
+        console.log("==================\n");
+        return;
+    }
+    
+    // Verify level 1 has the correct values (most recent wins)
+    const level1Data = tree.levels[1][0].data;
+    const expected = [
+        new Entry(1, 'c'),  // Should have 'c' not 'a'
+        new Entry(2, 'b'),
+        new Entry(3, 'd')
+    ];
+    
+    const correct = level1Data.length === expected.length &&
+        level1Data.every((entry, i) => 
+            entry.key === expected[i].key &&
+            entry.value === expected[i].value
+        );
+    
+    console.log("\nExpected level 1 data:", expected.map(e => e.toString()).join(', '));
+    console.log("Actual level 1 data:", level1Data.map(e => e.toString()).join(', '));
+    console.log("\nTest result:", correct ? "PASSED" : "FAILED");
+    console.log("==================\n");
+}
+
+// Run all tests
 testMergeSSTables();
 testMergeSSTables2();
+testCompactLevel0Simple();
+testLSMTreeLevel0Compaction();

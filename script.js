@@ -207,11 +207,12 @@ class LSMTree {
     async insert(key, value) {
         if (this.busy) return;
         
-        // console.log(`\nInserting ${key}:${value}`);
+        if (this.config.print) {
+            console.log(`\nInserting ${key}:${value}`);
+        }
         this.events.emit('beforeInsert', { key, value, level: 'memtable' });
         
         if (this.memtable.length === this.config.maxMemtableSize) {
-            // console.log('Memtable full, triggering flush...');
             await this.flushMemtable();
         }
         
@@ -225,17 +226,20 @@ class LSMTree {
             levelState: this.memtable
         });
 
-        // this.printState();
+        if (this.config.print) {
+            this.printState();
+        }
     }
 
     async flushMemtable() {
         if (this.busy) return;
         this.busy = true;
 
+        if (this.config.print) {
+            console.log('\nFlushing memtable to disk level 0...');
+        }
+
         try {
-            // console.log('\nFlushing memtable to disk level 0...');
-            
-            // Create new SSTable from memtable
             const newSSTable = new SSTable(this.memtable);
             
             this.events.emit('flushStart', {
@@ -250,7 +254,6 @@ class LSMTree {
             }
             this.levels[0].push(newSSTable);
             
-            // Clear memtable
             this.memtable = [];
 
             this.events.emit('flushComplete', {
@@ -259,14 +262,15 @@ class LSMTree {
                 newState: this.getSnapshot()
             });
 
-            // this.printState();
+            if (this.config.print) {
+                this.printState();
+            }
         } finally {
             this.busy = false;
         }
     }
 
     async flush(level) {
-        // console.log(`\nFlushing disk level ${level} to level ${level + 1}...`);
         this.events.emit('flushStart', {
             sourceLevel: level,
             sourceLevelState: [...this.levels[level]],
@@ -292,7 +296,6 @@ class LSMTree {
             newState: this.getSnapshot()
         });
 
-        // Check if next level needs flushing
         if (
             level + 1 < this.levels.length - 1 && 
             this.levels[level + 1].length > this.config.maxElementsPerLevel[level + 1]
@@ -300,7 +303,9 @@ class LSMTree {
             await this.flush(level + 1);
         }
 
-        // this.printState();
+        if (this.config.print) {
+            this.printState();
+        }
     }
 
     getSnapshot() {
@@ -507,7 +512,8 @@ const config = {
     maxElementsPerLevel: [4, 8, 16],
     elementSize: 40,
     levelHeight: 120,
-    margin: { top: 20, right: 20, bottom: 20, left: 60 }
+    margin: { top: 20, right: 20, bottom: 20, left: 60 },
+    print: true,
 };
 
 // Initialize
@@ -659,7 +665,8 @@ async function testLSMTreeLevel0Compaction() {
         maxElementsPerLevel: [2, 2, 2],  // Force level 0 compaction
         elementSize: 40,
         levelHeight: 120,
-        margin: { top: 20, right: 20, bottom: 20, left: 60 }
+        margin: { top: 20, right: 20, bottom: 20, left: 60 },
+        print: false
     };
     
     const tree = new LSMTree(testConfig);
@@ -671,10 +678,6 @@ async function testLSMTreeLevel0Compaction() {
     await tree.insert(3, 'd');  
     await tree.insert(5, 'f');  
     await tree.insert(6, 'g');  
-
-    console.log("\nBefore compact:");
-    tree.printState();
-
     await tree.insert(7, 'h');  
     
     console.log("\nFinal state:");
@@ -707,8 +710,81 @@ async function testLSMTreeLevel0Compaction() {
     console.log("==================\n");
 }
 
+async function testLSMTreeMergeCompaction() {
+    console.log("=== Testing LSM Tree Merge Compaction ===");
+    
+    // Create LSM tree with small sizes to force compaction
+    const testConfig = {
+        maxMemtableSize: 2,  // Force frequent memtable flushes
+        maxElementsPerLevel: [2, 2, 2],  // Force level 0 compaction
+        elementSize: 40,
+        levelHeight: 120,
+        margin: { top: 20, right: 20, bottom: 20, left: 60 },
+        print: false
+    };
+    
+    const tree = new LSMTree(testConfig);
+    
+    // Insert sequence that will force compaction
+    await tree.insert(1, 'a');  
+    await tree.insert(2, 'b');  
+    await tree.insert(1, 'c');  
+    await tree.insert(3, 'd');  
+    await tree.insert(5, 'f');  
+    await tree.insert(1, 'g');  
+
+    await tree.insert(7, 'h');  
+    await tree.insert(8, 'i');  
+    await tree.insert(9, 'j');  
+    await tree.insert(10, 'k');  
+    await tree.insert(11, 'l');  
+    
+    console.log("\nFinal state:");
+    tree.printState();
+    
+    // Check if level 1 exists and has data
+    if (!tree.levels[1] || !tree.levels[1][0]) {
+        console.log("\nTest result: FAILED - Level 1 is empty");
+        console.log("==================\n");
+        return;
+    }
+    
+    // Verify level 1 has the correct values (most recent wins)
+    const level1Data = tree.levels[1];
+    const expected = [
+        new SSTable([
+            new Entry(1, 'g'),  
+            new Entry(2, 'b'),
+            new Entry(3, 'd'),
+            new Entry(5, 'f'),
+        ]),
+        new SSTable([
+            new Entry(7, 'h'),
+            new Entry(8, 'i'),
+        ])
+    ];
+    
+    let correct = true;
+    for (let i = 0; i < level1Data.length; i++) {
+        for (let j = 0; j < level1Data[i].data.length; j++) {
+            if (level1Data[i].data[j].key !== expected[i].data[j].key || level1Data[i].data[j].value !== expected[i].data[j].value) {
+                correct = false;
+                break;
+            }
+        }
+    }
+    
+    console.log("\nExpected level 1 data:", expected.map(e => e.toString()).join(', '));
+    console.log("Actual level 1 data:", level1Data.map(e => e.toString()).join(', '));
+    console.log("\nTest result:", correct ? "PASSED" : "FAILED");
+    console.log("==================\n");
+}
+
 // Run all tests
-testMergeSSTables();
-testMergeSSTables2();
-testCompactLevel0Simple();
-testLSMTreeLevel0Compaction();
+(async () => {
+    testMergeSSTables();
+    testMergeSSTables2();
+    testCompactLevel0Simple();
+    await testLSMTreeLevel0Compaction();
+    await testLSMTreeMergeCompaction();
+})();

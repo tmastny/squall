@@ -211,7 +211,7 @@ class LSMTree {
         if (this.config.print) {
             console.log(`\nInserting ${key}:${value}`);
         }
-        this.events.emit('beforeInsert', { key, value, level: 'memtable' });
+        this.events.emit('beforeMemtableInsert', { key, value });
         
         if (this.memtable.length === this.config.maxMemtableSize) {
             await this.flushMemtable();
@@ -220,11 +220,10 @@ class LSMTree {
         this.memtable.push(new Entry(key, value));
         this.memtable.sort(Entry.compare);  // Use the static compare method
         
-        this.events.emit('afterInsert', { 
+        this.events.emit('afterMemtableInsert', { 
             key,
             value,
-            level: 'memtable',
-            levelState: this.memtable
+            memtableState: this.memtable
         });
 
         if (this.config.print) {
@@ -336,8 +335,8 @@ class LSMTreeVisualizer {
     }
 
     setupSubscriptions() {
-        this.tree.events.on('beforeInsert', this.handleBeforeInsert.bind(this));
-        this.tree.events.on('afterInsert', this.handleAfterInsert.bind(this));
+        this.tree.events.on('beforeMemtableInsert', this.handleBeforeMemtableInsert.bind(this));
+        this.tree.events.on('afterMemtableInsert', this.handleAfterMemtableInsert.bind(this));
         this.tree.events.on('flushStart', this.handleFlushStart.bind(this));
         this.tree.events.on('mergeComplete', this.handleMergeComplete.bind(this));
         this.tree.events.on('flushComplete', this.handleFlushComplete.bind(this));
@@ -359,8 +358,71 @@ class LSMTreeVisualizer {
             .text(d => d);
     }
 
-    async handleBeforeInsert(data) {
+    async handleBeforeMemtableInsert(data) {
         // Could add pre-insertion animations here
+    }
+
+    async handleAfterMemtableInsert(data) {
+        await this.animationQueue.add(async () => {
+            const { key, value, memtableState } = data;
+            const elementSize = this.config.elementSize;
+            const marginLeft = this.config.margin.left;
+            const marginTop = this.config.margin.top;
+            
+            // Ensure level group exists
+            let levelGroup = this.svg.select(`.level-group-memtable`);
+            if (levelGroup.empty()) {
+                levelGroup = this.svg.append("g")
+                    .attr("class", `level-group-memtable`)
+                    .attr("transform", `translate(0, ${marginTop})`);
+            }
+            
+            // Create a map of key to sorted index for positioning
+            const sortedIndices = new Map();
+            memtableState.forEach((entry, index) => {
+                sortedIndices.set(entry.key, index);
+            });
+            
+            // Update positions of existing elements based on their sorted position
+            levelGroup.selectAll(".element.level-memtable")
+                .transition()
+                .duration(500)
+                .attr("transform", (d, i, nodes) => {
+                    const elementKey = parseInt(nodes[i].querySelector('text').textContent.split(':')[0]);
+                    const sortedIndex = sortedIndices.get(elementKey);
+                    const x = marginLeft + (sortedIndex * (elementSize + 10));
+                    return `translate(${x}, 0)`;
+                });
+            
+            // Add the new element at its sorted position
+            const sortedIndex = sortedIndices.get(key);
+            const newElement = levelGroup.append("g")
+                .attr("class", "element level-memtable")
+                .attr("transform", `translate(${marginLeft + (sortedIndex * (elementSize + 10))}, 0)`);
+            
+            // Add circle
+            newElement.append("circle")
+                .attr("class", "memory-buffer")
+                .attr("r", 0)
+                .transition()
+                .duration(500)
+                .attr("r", elementSize / 2);
+            
+            // Add text
+            newElement.append("text")
+                .attr("text-anchor", "middle")
+                .attr("dy", "0.3em")
+                .text(`${key}:${value}`)
+                .style("opacity", 0)
+                .transition()
+                .duration(500)
+                .style("opacity", 1);
+            
+            await new Promise(resolve => setTimeout(resolve, 500));
+        });
+    }
+
+    async handleBeforeInsert(data) {
     }
 
     async handleAfterInsert(data) {
@@ -528,12 +590,12 @@ const visualizer = new LSMTreeVisualizer(lsmTree, "#lsm-svg", config);
 // Wire up UI controls
 const demoSequence = [
     // First batch - first range (10-20)
-    { key: 10, value: 'a' },
+    { key: 40, value: 'a' },
     { key: 15, value: 'b' },
     { key: 20, value: 'c' },
     
     // Second batch - second range (40-60)
-    { key: 40, value: 'd' },
+    { key: 10, value: 'd' },
     { key: 50, value: 'e' },
     { key: 60, value: 'f' },
     

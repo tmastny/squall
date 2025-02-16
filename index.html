@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>LSM-tree Visualization</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+    <style>
+        .container {
+            max-width: 1000px;
+            margin: 20px auto;
+            padding: 20px;
+            font-family: system-ui, -apple-system, sans-serif;
+        }
+        
+        .controls { margin-bottom: 20px; display: flex; gap: 10px; }
+        .button {
+            background-color: #4299e1;
+            color: white;
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        .button:hover { background-color: #3182ce; }
+        .visualization {
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            padding: 16px;
+            background: white;
+        }
+        .level-label { font-size: 14px; font-weight: 600; fill: #4a5568; }
+        .memory-buffer { fill: #9ae6b4; stroke: #38a169; }
+        .disk-level { fill: #90cdf4; stroke: #3182ce; }
+        .merging { fill: #fbd38d; stroke: #d69e2e; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="controls">
+            <button class="button" id="insertBtn">Insert Random Value</button>
+            <button class="button" id="flushBtn">Flush Memory Buffer</button>
+        </div>
+        <div class="visualization">
+            <svg id="lsm-svg" width="100%" height="600"></svg>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>

@@ -88,6 +88,13 @@ function mergeOrderedEntries(leftTable, rightTable, emitEvent) {
     let leftIdx = 0;  // leftTable (older, from level 1)
     let rightIdx = 0;  // rightTable (newer, from level 0)
     
+    // Emit setup event before starting merge
+    emitEvent('setupMergeZone', {
+        leftTable,
+        rightTable,
+        targetLength: leftTable.data.length + rightTable.data.length
+    });
+    
     while (leftIdx < leftTable.data.length || rightIdx < rightTable.data.length) {
         // If we've exhausted the newer table, or older key is smaller
         if (rightIdx >= rightTable.data.length || 
@@ -130,6 +137,12 @@ function mergeOrderedEntries(leftTable, rightTable, emitEvent) {
             rightIdx++;
         }
     }
+    
+    // Emit cleanup event after merge is complete
+    emitEvent('cleanupMergeZone', {
+        mergedEntries: merged,
+        finalPosition: 'level1'  // Indicate where the merged result should go
+    });
     
     return merged;
 }
@@ -668,8 +681,6 @@ class LSMTreeVisualizer {
             const marginLeft = this.config.margin.left;
             const entrySpacing = 15;
             
-            // Calculate the target position in level 1 (based on number of entries already merged)
-            const targetX = marginLeft + (mergedSoFar.length * (elementSize + entrySpacing));
             const level1Y = 140;  // Fixed Y position for level 1
             
             // Ensure level 1 group exists
@@ -680,36 +691,47 @@ class LSMTreeVisualizer {
                     .attr("transform", `translate(0, ${level1Y})`);
             }
             
+            // Calculate target X based on existing entries in level 1
+            const existingEntries = level1Group.selectAll(".element").size();
+            const targetX = marginLeft + (existingEntries * (elementSize + entrySpacing));
+            
             if (type === 'takeLeft') {
-                // Move entry from level 0 to level 1
+                // Move entry from level 1 to new position in level 1
                 const entry = this.svg.select(`.level-group-level1 .memtable-entry-${leftEntryIndex}`);
-                // First animate to position
                 await new Promise(resolve => {
                     entry
                         .transition()
                         .duration(500)
-                        .attr("transform", `translate(${targetX}, ${level1Y})`)
+                        .attr("transform", `translate(${targetX}, 0)`)
                         .on("end", resolve);
                 });
-                // Then move to level1 group
-                entry.remove();
-                level1Group.append(() => entry.node())
-                    .attr("transform", `translate(${targetX}, 0)`);
             } else {
-                // Move entry from level 0 to level 1
+                // Move entry from level 0 to level 1 with smooth reparenting
                 const entry = this.svg.select(`.level-group-level0 .memtable-entry-${rightEntryIndex}`);
-                // First animate to position
-                await new Promise(resolve => {
-                    entry
-                        .transition()
-                        .duration(500)
-                        .attr("transform", `translate(${targetX}, ${level1Y})`)
-                        .on("end", resolve);
-                });
-                // Then move to level1 group
+                const node = entry.node();
+
+                // Compute the element's current absolute transform
+                const oldCTM = node.getCTM();
+
+                // Get the inverse of the new group's CTM so we can convert coordinates
+                const newParentCTM = level1Group.node().getCTM().inverse();
+
+                // Multiply to get the transform relative to the new parent
+                const newCTM = newParentCTM.multiply(oldCTM);
+
+                // Remove and reappend the element to the new group, preserving its visual position
                 entry.remove();
-                level1Group.append(() => entry.node())
-                    .attr("transform", `translate(${targetX}, 0)`);
+                const reparentedEntry = level1Group.append(() => node)
+                .attr("transform", `matrix(${newCTM.a}, ${newCTM.b}, ${newCTM.c}, ${newCTM.d}, ${newCTM.e}, ${newCTM.f})`);
+
+                // Now animate within the new group to the final position (note that level1Group is already translated)
+                await new Promise(resolve => {
+                reparentedEntry
+                    .transition()
+                    .duration(500)
+                    .attr("transform", `translate(${targetX}, 0)`)
+                    .on("end", resolve);
+                });
             }
             
             await new Promise(resolve => setTimeout(resolve, 100));

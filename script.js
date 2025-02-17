@@ -3,14 +3,14 @@ class EventEmitter {
     constructor() {
         this.listeners = new Map();
     }
-    
+
     on(event, callback) {
         if (!this.listeners.has(event)) {
             this.listeners.set(event, new Set());
         }
         this.listeners.get(event).add(callback);
     }
-    
+
     emit(event, data) {
         if (this.listeners.has(event)) {
             for (const callback of this.listeners.get(event)) {
@@ -87,19 +87,19 @@ function mergeOrderedEntries(leftTable, rightTable, emitEvent) {
     const merged = [];
     let leftIdx = 0;  // leftTable (older, from level 1)
     let rightIdx = 0;  // rightTable (newer, from level 0)
-    
+
     // Emit setup event before starting merge
     emitEvent('setupMergeZone', {
         leftTable,
         rightTable,
         targetLength: leftTable.data.length + rightTable.data.length
     });
-    
+
     while (leftIdx < leftTable.data.length || rightIdx < rightTable.data.length) {
         // If we've exhausted the newer table, or older key is smaller
-        if (rightIdx >= rightTable.data.length || 
-            (leftIdx < leftTable.data.length && 
-             leftTable.data[leftIdx].key < rightTable.data[rightIdx].key)) {
+        if (rightIdx >= rightTable.data.length ||
+            (leftIdx < leftTable.data.length &&
+                leftTable.data[leftIdx].key < rightTable.data[rightIdx].key)) {
             emitEvent('mergeStep', {
                 type: 'takeLeft',
                 leftEntryIndex: leftIdx,
@@ -110,9 +110,9 @@ function mergeOrderedEntries(leftTable, rightTable, emitEvent) {
             leftIdx++;
         }
         // If we've exhausted the older table, or newer key is smaller/equal
-        else if (leftIdx >= leftTable.data.length || 
-                 rightTable.data[rightIdx].key <= leftTable.data[leftIdx].key) {
-            if (leftIdx < leftTable.data.length && 
+        else if (leftIdx >= leftTable.data.length ||
+            rightTable.data[rightIdx].key <= leftTable.data[leftIdx].key) {
+            if (leftIdx < leftTable.data.length &&
                 rightTable.data[rightIdx].key === leftTable.data[leftIdx].key) {
                 emitEvent('mergeStep', {
                     type: 'takeRightOverwrite',
@@ -130,48 +130,48 @@ function mergeOrderedEntries(leftTable, rightTable, emitEvent) {
             }
             merged.push(rightTable.data[rightIdx]);
             // Skip any duplicate keys in older table
-            while (leftIdx < leftTable.data.length && 
-                   leftTable.data[leftIdx].key === rightTable.data[rightIdx].key) {
+            while (leftIdx < leftTable.data.length &&
+                leftTable.data[leftIdx].key === rightTable.data[rightIdx].key) {
                 leftIdx++;
             }
             rightIdx++;
         }
     }
-    
+
     // Emit cleanup event after merge is complete
     emitEvent('cleanupMergeZone', {
         mergedEntries: merged,
         finalPosition: 'level1'  // Indicate where the merged result should go
     });
-    
+
     return merged;
 }
 
 function mergeSSTables(thisLevel, nextLevel, events = null) {
     if (thisLevel.length === 0) return nextLevel;
-    
+
     const emitEvent = (eventName, data) => {
         if (events) {
             events.emit(eventName, data);
         }
     };
-    
+
     let resultLevel = [...nextLevel];  // Work with a copy of nextLevel
-    
+
     // Helper to check if tables overlap
-    const tablesOverlap = (table1, table2) => 
+    const tablesOverlap = (table1, table2) =>
         (table1.minKey <= table2.maxKey && table1.maxKey >= table2.minKey);
-    
+
     // Process each table from thisLevel
     thisLevel.forEach((thisTable, i) => {
         // Find all overlapping tables from resultLevel
-        const overlappingTables = resultLevel.filter(nextTable => 
+        const overlappingTables = resultLevel.filter(nextTable =>
             tablesOverlap(thisTable, nextTable)
         );
-        
+
         // If no overlapping tables, use an empty table
         const tablesToMerge = overlappingTables.length > 0 ? overlappingTables : [new SSTable([])];
-        
+
         emitEvent('mergeGroupFound', {
             sourceTable: {
                 table: thisTable,
@@ -188,20 +188,20 @@ function mergeSSTables(thisLevel, nextLevel, events = null) {
                 level1: resultLevel.length
             }
         });
-        
+
         let result = thisTable;
-        
+
         tablesToMerge.forEach(nextTable => {
-            
+
             const merged = mergeOrderedEntries(nextTable, result, emitEvent);
             result = new SSTable(merged);
         });
-        
+
         // Remove the overlapped tables (if any)
         if (overlappingTables.length > 0) {
             resultLevel = resultLevel.filter(table => !overlappingTables.includes(table));
         }
-        
+
         // Insert result in order by minKey
         const insertIndex = resultLevel.findIndex(table => table.minKey > result.minKey);
         if (insertIndex === -1) {
@@ -220,7 +220,7 @@ function mergeSSTables(thisLevel, nextLevel, events = null) {
             targetLevelState: resultLevel  // now includes the newly inserted table
         });
     });
-    
+
     return resultLevel;
 }
 
@@ -228,7 +228,7 @@ class LSMTree {
     constructor(config) {
         this.config = config;
         this.memtable = [];  // Will hold Entry objects
-        this.levels = [[], []];  
+        this.levels = [[], []];
         this.events = new EventEmitter();
         this.busy = false;
     }
@@ -237,7 +237,7 @@ class LSMTree {
         console.log('\n=== LSM Tree State ===');
         console.log('Memtable:', this.memtable.map(e => e.toString()).join(', ') || '(empty)');
         this.levels.forEach((level, index) => {
-            console.log(`Disk Level ${index}:`, 
+            console.log(`Disk Level ${index}:`,
                 level.length ? level.map(sst => sst.toString()).join(' | ') : '(empty)');
         });
         console.log('==================\n');
@@ -245,23 +245,21 @@ class LSMTree {
 
     async insert(key, value) {
         if (this.busy) return;
-        
+
         if (this.config.print) {
             console.log(`\nInserting ${key}:${value}`);
         }
         this.events.emit('beforeMemtableInsert', { key, value });
-        
+
         if (this.memtable.length === this.config.maxMemtableSize) {
             await this.flushMemtable();
         }
-        
+
         this.memtable.push(new Entry(key, value));
         this.memtable.sort(Entry.compare);  // Use the static compare method
-        
-        this.events.emit('afterMemtableInsert', { 
-            key,
-            value,
-            memtableState: this.memtable
+
+        this.events.emit('afterMemtableInsert', {
+            memtable: this.memtable.slice()
         });
 
         if (this.config.print) {
@@ -279,7 +277,7 @@ class LSMTree {
 
         try {
             const newSSTable = new SSTable(this.memtable);
-            
+
             this.events.emit('flushStart', {
                 sourceLevel: 'memtable',
                 sourceLevelState: [...this.memtable],
@@ -291,7 +289,7 @@ class LSMTree {
                 await this.flush(0);
             }
             this.levels[0].push(newSSTable);
-            
+
             this.memtable = [];
 
             this.events.emit('memtableFlushed', {
@@ -322,7 +320,7 @@ class LSMTree {
         this.levels[level + 1] = mergedSSTables;
 
         if (
-            level + 1 < this.levels.length - 1 && 
+            level + 1 < this.levels.length - 1 &&
             this.levels[level + 1].length > this.config.maxElementsPerLevel[level + 1]
         ) {
             await this.flush(level + 1);
@@ -331,16 +329,6 @@ class LSMTree {
         if (this.config.print) {
             this.printState();
         }
-    }
-
-    getSnapshot() {
-        return {
-            memtable: [...this.memtable],
-            levels: this.levels.map(level => 
-                level.map(sst => sst.data).flat()  // Flatten SSTables for visualization
-            ),
-            timestamp: Date.now()
-        };
     }
 }
 
@@ -364,6 +352,8 @@ class LSMTreeVisualizer {
         this.tree.events.on('memtableFlushed', this.handleMemtableFlushed.bind(this));
         this.tree.events.on('mergeGroupFound', this.handleMergeGroupFound.bind(this));
         this.tree.events.on('mergeStep', this.handleMergeStep.bind(this));
+        this.tree.events.on('setupMergeZone', this.handleSetupMergeZone.bind(this));
+        this.tree.events.on('cleanupMergeZone', this.handleCleanupMergeZone.bind(this));
     }
 
     setupLayout() {
@@ -371,16 +361,16 @@ class LSMTreeVisualizer {
         const margin = { top: 20, right: 20, bottom: 20, left: 20 };
         const labelHeight = 12; // reduced to 12 (from 25)
 
-        // Add level labels
-        this.svg.selectAll(".level-label")
-            .data(["Memtable", "Level 0", "Level 1"])
-            .enter()
-            .append("text")
-            .attr("class", "level-label")
-            .attr("x", margin.left)  // align with left margin
-            .attr("y", (d, i) => margin.top + (i * this.config.levelHeight))  // position at top of each section
-            .attr("text-anchor", "start")
-            .text(d => d);
+        // // Add level labels
+        // this.svg.selectAll(".level-label")
+        //     .data(["Memtable", "Level 0", "Level 1"])
+        //     .enter()
+        //     .append("text")
+        //     .attr("class", "level-label")
+        //     .attr("x", margin.left)  // align with left margin
+        //     .attr("y", (d, i) => margin.top + (i * this.config.levelHeight))  // position at top of each section
+        //     .attr("text-anchor", "start")
+        //     .text(d => d);
 
         // Update element positioning to start below labels
         this.config.margin = {
@@ -390,6 +380,271 @@ class LSMTreeVisualizer {
             bottom: margin.bottom
         };
         this.config.levelHeight = 45; // total height including label and elements
+
+
+        this.memtableData = [];
+
+        // Create the memtable group (the "layer")
+        this.memtableGroup = this.svg.append("g")
+            .attr("class", "level-group-memtable")
+            .attr("transform", `translate(${this.config.margin.left}, ${this.config.margin.top})`);
+
+
+        this.level0Data = [];
+        this.level0Group = this.svg.append("g")
+            .attr("class", "level-group-level0")
+            .attr("transform", "translate(0, 140)");
+
+        // 1. Create the SVG
+        // this.svg = d3.select(config.container)
+        //     .append("svg")
+        //     .attr("width", config.width)
+        //     .attr("height", config.height);
+
+        // 2. The unified data array of all entries
+        //    Each item is { key, value, stage: 'memtable' | 'level0' | 'mergeZone' ... }
+        this.allEntries = [];
+    }
+
+    computePosition(d, memtableItems, level0Items, mergeZoneItems) {
+        // We'll define different vertical positions or "rows" for each stage
+        const memtableY = 50;
+        const level0Y = 140;
+        const mergeZoneY = 200;
+
+        const elementSize = this.config.elementSize;
+        const spacing = 10;
+
+        let indexInStage = 0;
+        let stageY = 0;
+
+        // figure out indexInStage and stageY
+        switch (d.stage) {
+            case 'memtable':
+                indexInStage = memtableItems.findIndex(x => x.key === d.key);
+                stageY = memtableY;
+                break;
+            case 'level0':
+                indexInStage = level0Items.findIndex(x => x.key === d.key);
+                stageY = level0Y;
+                break;
+            case 'mergeZone':
+                indexInStage = mergeZoneItems.findIndex(x => x.key === d.key);
+                stageY = mergeZoneY;
+                break;
+            // add more if you have more stages
+        }
+
+        // Now compute X as indexInStage times some offset
+        const x = 50 + indexInStage * (elementSize + spacing);
+        const y = stageY;
+        return { x, y };
+    }
+
+    updateAllEntries() {
+        // 1. Let’s separate items by stage in memory, so we know their index in each stage
+        const memtableItems = this.allEntries.filter(d => d.stage === 'memtable');
+        const level0Items = this.allEntries.filter(d => d.stage === 'level0');
+        const mergeZoneItems = this.allEntries.filter(d => d.stage === 'mergeZone');
+        // ... etc. if you have more stages
+
+        // We'll use these arrays to figure out each item's index in its stage. 
+        // Typically you might have them sorted by key if needed.
+
+        // 2. The data join (all items in a single selection)
+        const selection = this.svg.selectAll(".lsm-entry")
+            .data(this.allEntries, d => d.key); // key function ensures stable matching
+
+        // EXIT
+        selection.exit()
+            .transition()
+            .duration(300)
+            .style("opacity", 0)
+            .remove();
+
+        // ENTER
+        const enterSel = selection.enter()
+            .append("g")
+            .attr("class", "lsm-entry element")
+            .attr("transform", d => {
+                // Place them initially at their final position or somewhere else if you prefer
+                const { x, y } = this.computePosition(d, memtableItems, level0Items, mergeZoneItems);
+                return `translate(${x}, ${y})`;
+            });
+
+        // A. Append circle with zero radius and the .memory-buffer class so it’s visible
+        enterSel.append("circle")
+            .attr("class", "memory-buffer")
+            .attr("r", 0);
+
+        // B. Append text
+        enterSel.append("text")
+            .attr("text-anchor", "middle")
+            .attr("dy", "0.3em")
+            .text(d => `${d.key}:${d.value}`);
+
+        // C. Chain the transitions **on the enter selection** so new items go:
+        //    1) from opacity=0 to 1
+        //    2) from r=0 to r=elementSize/2
+        //    3) (Optionally) remain in the same transform if you want them
+        //       to appear in place. If you want them to move from an off-screen
+        //       position, you'd set an initial transform, then update it here.
+        enterSel
+            .transition()
+            .duration(300)
+            .select("circle")
+            .attr("r", this.config.elementSize / 2);
+
+        // MERGE (ENTER + UPDATE)
+        const mergedSel = selection.merge(enterSel);
+
+        // D. Now for existing + new items, we do the final position transition.
+        //    This won't override the enter fade, because new items have already
+        //    set their opacity=1. Meanwhile, old items also move to their new
+        //    positions. 
+        mergedSel.transition()
+            .duration(500)
+            .attr("transform", d => {
+                const { x, y } = this.computePosition(d, memtableItems, level0Items, mergeZoneItems);
+                return `translate(${x}, ${y})`;
+            });
+    }
+
+
+    updateLevel0() {
+        // Layout constants
+        const { margin, elementSize } = this.config;
+        const tableSpacing = 100;  // How far apart each SSTable is horizontally
+        const entrySpacing = 15;   // Spacing within each SSTable
+        const entryRadius = elementSize / 2;
+
+        // 1. Join SStables to .sstable-group elements
+        //    key function ensures stable mapping by sstable.id.
+        const sstableSel = this.level0Group
+            .selectAll(".sstable-group")
+            .data(this.level0Data, d => d.id);
+
+        // 2. Handle Exit (if any SSTables got removed)
+        sstableSel.exit()
+            .transition()
+            .duration(500)
+            .style("opacity", 0)
+            .remove();
+
+        // 3. Handle Enter for new SStables
+        const enterSStables = sstableSel.enter()
+            .append("g")
+            .attr("class", "sstable-group")
+            .attr("transform", (d, i) => `translate(${margin.left + i * tableSpacing}, 0)`);
+
+        // Optional: draw a bounding rectangle for each SStable
+        enterSStables.append("rect")
+            .attr("class", "sstable-background")
+            .attr("width", 80)
+            .attr("height", 50)
+            .attr("rx", 5).attr("ry", 5)
+            .style("fill", "none")
+            .style("stroke", "#666");
+
+        // Merge ENTER + UPDATE
+        const mergedSStables = sstableSel.merge(enterSStables)
+            // Animate each SStable to its new position (if reordering or more SStables appear)
+            .transition()
+            .duration(500)
+            .attr("transform", (d, i) => `translate(${margin.left + i * tableSpacing}, 0)`);
+
+        // 4. For each SStable group, do a nested data join for the entries
+        //    We assume d.data = array of entries: [ {key, value}, {key, value}, ... ]
+        mergedSStables.each(function (sstable) {
+            // `this` is the <g class="sstable-group">
+            const sstableGroup = d3.select(this);
+
+            // Join data to .sstable-entry elements
+            const entrySel = sstableGroup.selectAll(".sstable-entry")
+                .data(sstable.data, d => d.key); // use .key as unique ID
+
+            // Exit
+            entrySel.exit().remove();
+
+            // Enter
+            const enterEntries = entrySel.enter()
+                .append("g")
+                .attr("class", "sstable-entry element")
+                .attr("transform", (d, i) => `translate(${10 + i * (entrySpacing + elementSize)}, 15)`);
+
+            // A. Circle
+            enterEntries.append("circle")
+                .attr("class", "disk-level") // or some class that styles disk-level entries
+                .attr("r", entryRadius);
+
+            // B. Text
+            enterEntries.append("text")
+                .attr("text-anchor", "middle")
+                .attr("dy", "0.3em")
+                .text(d => `${d.key}:${d.value}`);
+
+            // Merge + Update to position or animate existing entries if needed
+            const mergedEntries = entrySel.merge(enterEntries)
+                .transition()
+                .duration(500)
+                .attr("transform", (d, i) => `translate(${10 + i * (entrySpacing + elementSize)}, 15)`);
+        });
+    }
+
+
+    updateMemtable() {
+        const { margin, elementSize } = this.config;
+        const entrySpacing = 10;
+
+        // Helper to compute final X position for an entry at index i
+        const computeXPos = (i) => margin.left + i * (elementSize + entrySpacing);
+
+        // 1. Perform the data join on the memtable group.
+        //    We use a key function that returns d.key so that D3 can track each entry by its unique key.
+        const sel = this.memtableGroup
+            .selectAll(".memtable-entry")
+            .data(this.memtableData, d => d.key);
+
+        // 2. Handle EXIT selection (elements that should be removed)
+        //    If you ever remove entries from the memtableData, they'll transition out here.
+        sel.exit()
+            .transition()
+            .duration(500)
+            .style("opacity", 0)
+            .remove();
+
+        // 3. Handle ENTER selection (new data items)
+        const enterSel = sel.enter().append("g")
+            .attr("class", "memtable-entry element")
+            // You could place new elements at a "start" position or off-screen if you prefer a more obvious animation.
+            // For simplicity, place them at their final position immediately.
+            .attr("transform", (d, i) => `translate(${computeXPos(i)}, 0)`);
+
+        // A. Append a circle for the new entry
+        enterSel.append("circle")
+            .attr("class", "memory-buffer")
+            .attr("r", 0)
+            .transition()
+            .duration(300)
+            .attr("r", elementSize / 2);
+
+        // B. Append text (key:value)
+        enterSel.append("text")
+            .attr("text-anchor", "middle")
+            .attr("dy", "0.3em")
+            .style("opacity", 0)
+            .text(d => `${d.key}:${d.value}`)
+            .transition()
+            .duration(300)
+            .style("opacity", 1);
+
+        // 4. Merge the ENTER + UPDATE selections for positioning updates
+        const mergedSel = sel.merge(enterSel);
+
+        // 5. Animate all existing + newly entered elements to their correct positions
+        mergedSel.transition()
+            .duration(500)
+            .attr("transform", (d, i) => `translate(${computeXPos(i)}, 0)`);
     }
 
     async handleBeforeMemtableInsert(data) {
@@ -398,133 +653,62 @@ class LSMTreeVisualizer {
 
     async handleAfterMemtableInsert(data) {
         await this.animationQueue.add(async () => {
-            const { key, value, memtableState } = data;
-            const elementSize = this.config.elementSize;
-            const marginLeft = this.config.margin.left;
-            
-            // Create a map of key to sorted index for positioning
-            const sortedIndices = new Map();
-            memtableState.forEach((entry, index) => {
-                sortedIndices.set(entry.key, index);
-            });
-            
-            // Ensure level group exists
-            let levelGroup = this.svg.select(`.level-group-memtable`);
-            if (levelGroup.empty()) {
-                levelGroup = this.svg.append("g")
-                    .attr("class", `level-group-memtable`)
-                    .attr("transform", `translate(0, ${this.config.margin.top})`);
-            }
-            
-            // Update positions of existing elements based on their sorted position
-            levelGroup.selectAll(".element")
-                .transition()
-                .duration(500)  // Increased from 200 to 500
-                .attr("transform", (d, i, nodes) => {
-                    const elementKey = parseInt(nodes[i].querySelector('text').textContent.split(':')[0]);
-                    const sortedIndex = sortedIndices.get(elementKey);
-                    const x = marginLeft + (sortedIndex * (elementSize + 10));
-                    return `translate(${x}, 0)`;
-                })
-                .attr("class", (d, i, nodes) => {
-                    const elementKey = parseInt(nodes[i].querySelector('text').textContent.split(':')[0]);
-                    const sortedIndex = sortedIndices.get(elementKey);
-                    return `element memtable-entry-${sortedIndex}`;
-                });
-            
-            // Add the new element with its sorted index class
-            const sortedIndex = sortedIndices.get(key);
-            const newElement = levelGroup.append("g")
-                .attr("class", `element memtable-entry-${sortedIndex}`)
-                .attr("transform", `translate(${marginLeft + (sortedIndex * (elementSize + 10))}, 0)`);
-            
-            // Add circle
-            newElement.append("circle")
-                .attr("class", "memory-buffer")
-                .attr("r", 0)
-                .transition()
-                .duration(200)
-                .attr("r", elementSize / 2);
-            
-            // Add text
-            newElement.append("text")
-                .attr("text-anchor", "middle")
-                .attr("dy", "0.3em")
-                .text(`${key}:${value}`)
-                .style("opacity", 0)
-                .transition()
-                .duration(200)
-                .style("opacity", 1);
-            
-            await new Promise(resolve => setTimeout(resolve, 200));
+            const { memtable } = data;
+            // "memtable" is the latest array of entries in the memtable (sorted).
+
+            // 1. Remove all old items in allEntries with stage='memtable'
+            this.allEntries = this.allEntries.filter(d => d.stage !== 'memtable');
+
+            // 2. Insert the new memtable items:
+            //    We can either keep the old .key if it matches, or we just create new objects.  
+            //    If you want stable references for the same keys, you can do a more advanced approach,
+            //    but here's a simple pattern: just create a new object with stage='memtable' for each item.
+            const newMemtableEntries = memtable.map(entry => ({
+                key: entry.key,
+                value: entry.value,
+                stage: 'memtable'
+            }));
+
+            // 3. Add them to the unified array
+            this.allEntries.push(...newMemtableEntries);
+
+            // 4. Call updateAllEntries so D3 re-binds data and transitions
+            this.updateAllEntries();
+
+            // 5. Optionally wait for some time or let the transitions finish
+            await new Promise(resolve => setTimeout(resolve, 500));
         });
     }
+
 
     async handleMemtableFlushed(data) {
         await this.animationQueue.add(async () => {
             const { memtableState, level0State } = data;
-            const elementSize = this.config.elementSize;
-            const marginLeft = this.config.margin.left;
-            const marginTop = this.config.margin.top;
-            
-            // Get the current memtable group
-            const memtableGroup = this.svg.select('.level-group-memtable');
-            if (memtableGroup.empty()) return;
-            
-            // Add a rectangle around the memtable group
-            const bbox = memtableGroup.node().getBBox();
-            const padding = 10;
-            
-            const sstableGroup = memtableGroup.append("g")
-                .attr("class", "sstable-group");
-                
-            // Add background rectangle
-            sstableGroup.append("rect")
-                .attr("class", "sstable-background")
-                .attr("x", bbox.x - padding)
-                .attr("y", bbox.y - padding)
-                .attr("width", bbox.width + (padding * 2))
-                .attr("height", bbox.height + (padding * 2))
-                .attr("rx", 5)
-                .attr("ry", 5)
-                .style("fill", "none")
-                .style("stroke", "#666")
-                .style("stroke-width", 2)
-                .style("opacity", 0)
-                .transition()
-                .duration(200)
-                .style("opacity", 1);
-            
-            // Calculate target position in level 0
-            const level0Y = marginTop + this.config.levelHeight;
-            
-            // Position directly at marginLeft if it's the first SSTable
-            // Otherwise, position after the last existing SSTable
-            const existingLevel0Groups = this.svg.selectAll('.level-group-level0 .sstable-group');
-            const numExistingSSTables = existingLevel0Groups.size();
-            const level0X = marginLeft + (numExistingSSTables * (bbox.width + 40)); // 40px spacing between SSTables
-            
-            // Animate the entire group moving down
-            await new Promise(resolve => {
-                memtableGroup.transition()
-                    .duration(200)
-                    .attr("transform", `translate(${level0X}, ${level0Y})`)
-                    .on("end", resolve);
+            // level0State is now an array of SSTable instances [SSTable, SSTable, ...].
+
+            // 1. Clear memtable visually (it's now empty).
+            //    If you have an updateMemtable() that uses this.memtableData, just set it to memtableState (which is empty).
+            this.memtableData = memtableState.slice(); // Should be empty
+            this.updateMemtable(); // This shows the memtable is cleared.
+
+            // 2. Update our local "level0Data" with the new array of SSTables
+            //    We assume each SStable instance has { id, data: [entries] } or similar.
+            //    Convert them if needed: e.g. if SStable has .data array of entries, or if you need to adapt to your shape.
+            this.level0Data = level0State.map((sst, i) => {
+                return {
+                    id: i,          // or sst.id, or something unique
+                    data: sst  // array of { key, value } entries
+                };
             });
-            
-            // Change class to indicate it's now in level 0
-            memtableGroup
-                .classed("level-group-memtable", false)
-                .classed("level-group-level0", true);
-            
-            // Create new empty memtable group for future inserts
-            this.svg.append("g")
-                .attr("class", "level-group-memtable")
-                .attr("transform", `translate(0, ${marginTop})`);
-            
-            await new Promise(resolve => setTimeout(resolve, 200));
+
+            // 3. Update the visualization of level 0 with the new SStables
+            this.updateLevel0();
+
+            // Optionally wait a brief moment
+            await new Promise(resolve => setTimeout(resolve, 500));
         });
     }
+
 
     async handleBeforeInsert(data) {
     }
@@ -539,7 +723,7 @@ class LSMTreeVisualizer {
         await this.animationQueue.add(async () => {
             // Remove merging class from all elements first
             this.svg.selectAll(".merging").classed("merging", false);
-            
+
             // Highlight source level
             await this.highlightLevelForMerge(data.sourceLevel);
             // Also highlight target level
@@ -549,13 +733,13 @@ class LSMTreeVisualizer {
     async handleMergeComplete(data) {
         await this.animationQueue.add(async () => {
             const { sourceLevel, targetLevel } = data;
-            
+
             // Get exact level positions from config
             const level1Y = 140; // From the DOM inspector
-            
+
             // Get the entire source level group
             const sourceGroup = this.svg.select(`.level-group-level${sourceLevel}`);
-            
+
             // Ensure target level group exists at the correct Y position
             let targetGroup = this.svg.select(`.level-group-level${targetLevel}`);
             if (targetGroup.empty()) {
@@ -563,7 +747,7 @@ class LSMTreeVisualizer {
                     .attr("class", `level-group-level${targetLevel}`)
                     .attr("transform", `translate(20, ${level1Y})`);  // x=20 from DOM inspector
             }
-            
+
             // Move the entire group and its contents
             await new Promise(resolve => {
                 sourceGroup
@@ -572,7 +756,7 @@ class LSMTreeVisualizer {
                     .attr("transform", `translate(20, ${level1Y})`)
                     .on("end", resolve);
             });
-            
+
             await new Promise(resolve => setTimeout(resolve, 200));
         });
     }
@@ -599,10 +783,10 @@ class LSMTreeVisualizer {
     async updateLevel(levelIndex, levelState) {
         // Convert 'memtable' to 0 for positioning
         const yPosition = levelIndex === 'memtable' ? 0 : levelIndex;
-        
+
         // First, ensure we remove any existing elements for this level
         this.svg.selectAll(`.level-group-${levelIndex}`).remove();
-        
+
         const levelGroup = this.svg.append("g")
             .attr("class", `level-group-${levelIndex}`)
             .attr("transform", `translate(0, ${this.config.margin.top + (yPosition * this.config.levelHeight)})`);
@@ -649,27 +833,27 @@ class LSMTreeVisualizer {
         await this.animationQueue.add(async () => {
             // Remove any existing highlights first
             this.svg.selectAll(".merging").classed("merging", false);
-            
+
             // Highlight source table
             const sourceSelector = `.level-group-level${data.sourceTable.level}`;
-            
+
             // Select only the SSTable at the specific index
             this.svg.selectAll(`${sourceSelector} .sstable-group`)
                 .filter((d, i) => i === data.sourceTable.index)
                 .select("rect")  // Get the rectangle within the matched SSTable group
                 .classed("merging", true);
-            
+
             // Highlight overlapping tables
             data.overlappingTables.forEach(table => {
                 const targetSelector = `.level-group-level${table.level}`;
-                
+
                 // Select only the SSTable at the specific index
                 this.svg.selectAll(`${targetSelector} .sstable-group`)
                     .filter((d, i) => i === table.index)
                     .select("rect")
                     .classed("merging", true);
             });
-            
+
             await new Promise(resolve => setTimeout(resolve, 200));
         });
     }
@@ -678,62 +862,162 @@ class LSMTreeVisualizer {
         await this.animationQueue.add(async () => {
             const { type, leftEntryIndex, rightEntryIndex, mergedSoFar } = data;
             const elementSize = this.config.elementSize;
-            const marginLeft = this.config.margin.left;
             const entrySpacing = 15;
-            
-            const level1Y = 140;  // Fixed Y position for level 1
-            
-            // Ensure level 1 group exists
-            let level1Group = this.svg.select('.level-group-level1');
-            if (level1Group.empty()) {
-                level1Group = this.svg.append("g")
-                    .attr("class", "level-group-level1")
-                    .attr("transform", `translate(0, ${level1Y})`);
+            // Use the merge zone’s left offset (same as the background's x)
+            const mergeZoneMargin = this.config.margin.left;
+
+            // Select the merge zone (which should have been set up already)
+            const mergeZone = this.svg.select('.merge-zone');
+            if (mergeZone.empty()) {
+                throw new Error("Merge zone not found. Please call handleSetupMergeZone first.");
             }
-            
-            // Calculate target X based on existing entries in level 1
-            const existingEntries = level1Group.selectAll(".element").size();
-            const targetX = marginLeft + (existingEntries * (elementSize + entrySpacing));
-            
+
+            // Calculate target X based on how many elements are already in the merge zone.
+            // (Assuming that reparented entries have a class "element" on them.)
+            const existingEntries = mergeZone.selectAll(".element").size();
+            const targetX = mergeZoneMargin + (existingEntries * (elementSize + entrySpacing));
+
+            // Choose the source group based on the event type:
+            // - "takeLeft": entry is in level1 group
+            // - "takeRight": entry is in level0 group
+            let sourceGroupSelector, entryIndex;
             if (type === 'takeLeft') {
-                // Move entry from level 1 to new position in level 1
-                const entry = this.svg.select(`.level-group-level1 .memtable-entry-${leftEntryIndex}`);
-                await new Promise(resolve => {
-                    entry
-                        .transition()
-                        .duration(500)
-                        .attr("transform", `translate(${targetX}, 0)`)
-                        .on("end", resolve);
-                });
+                sourceGroupSelector = '.level-group-level1';
+                entryIndex = leftEntryIndex;
             } else {
-                // Move entry from level 0 to level 1 with smooth reparenting
-                const entry = this.svg.select(`.level-group-level0 .memtable-entry-${rightEntryIndex}`);
-                const node = entry.node();
+                sourceGroupSelector = '.level-group-level0';
+                entryIndex = rightEntryIndex;
+            }
 
-                // Compute the element's current absolute transform
-                const oldCTM = node.getCTM();
+            const entry = this.svg.select(`${sourceGroupSelector} .memtable-entry-${entryIndex}`);
+            if (entry.empty()) {
+                console.warn(`Entry not found for index: ${entryIndex}`);
+                return;
+            }
 
-                // Get the inverse of the new group's CTM so we can convert coordinates
-                const newParentCTM = level1Group.node().getCTM().inverse();
+            // Reparenting the entry into the merge zone while preserving its visual position:
+            const node = entry.node();
+            const oldCTM = node.getCTM();
+            const newParentCTM = mergeZone.node().getCTM().inverse();
+            const newCTM = newParentCTM.multiply(oldCTM);
 
-                // Multiply to get the transform relative to the new parent
-                const newCTM = newParentCTM.multiply(oldCTM);
-
-                // Remove and reappend the element to the new group, preserving its visual position
-                entry.remove();
-                const reparentedEntry = level1Group.append(() => node)
+            // Remove from the old group and append into the merge zone.
+            // (Make sure the entry has a persistent class "element" so we can count it later.)
+            entry.remove();
+            const reparentedEntry = mergeZone.append(() => node)
+                .attr("class", d => d ? d.className.baseVal : "element") // Preserve or add the "element" class
                 .attr("transform", `matrix(${newCTM.a}, ${newCTM.b}, ${newCTM.c}, ${newCTM.d}, ${newCTM.e}, ${newCTM.f})`);
 
-                // Now animate within the new group to the final position (note that level1Group is already translated)
-                await new Promise(resolve => {
+            // Animate the entry to its target position within the merge zone.
+            await new Promise(resolve => {
                 reparentedEntry
                     .transition()
                     .duration(500)
                     .attr("transform", `translate(${targetX}, 0)`)
                     .on("end", resolve);
-                });
+            });
+
+            // Brief pause after the merge step animation
+            await new Promise(resolve => setTimeout(resolve, 100));
+        });
+    }
+
+    async handleSetupMergeZone(data) {
+        await this.animationQueue.add(async () => {
+            const { leftTable, rightTable, targetLength } = data;
+            const mergeZoneY = 200;  // Position below both levels
+
+            // Create merge zone group
+            let mergeZone = this.svg.select('.merge-zone');
+            if (mergeZone.empty()) {
+                mergeZone = this.svg.append("g")
+                    .attr("class", "merge-zone")
+                    .attr("transform", `translate(0, ${mergeZoneY})`);
+
+                // Add background rectangle to visualize the zone
+                mergeZone.append("rect")
+                    .attr("class", "merge-zone-bg")
+                    .attr("x", this.config.margin.left - 10)
+                    .attr("y", -10)
+                    .attr("width", (targetLength * (this.config.elementSize + 10)) + 20)
+                    .attr("height", this.config.elementSize + 20)
+                    .attr("rx", 5)
+                    .attr("ry", 5)
+                    .style("fill", "none")
+                    .style("stroke", "#666")
+                    .style("stroke-width", 2)
+                    .style("opacity", 0)
+                    .transition()
+                    .duration(500)
+                    .style("opacity", 1);
             }
-            
+
+            await new Promise(resolve => setTimeout(resolve, 500));
+        });
+    }
+    async handleCleanupMergeZone(data) {
+        await this.animationQueue.add(async () => {
+            const { mergedEntries, finalPosition } = data; // Available if needed for further animations
+            const level1Y = 140;  // Final Y position for level 1
+            const marginLeft = this.config.margin.left;
+            const elementSize = this.config.elementSize;
+            const entrySpacing = 15;
+
+            // Select the merge zone group
+            const mergeZone = this.svg.select('.merge-zone');
+            if (mergeZone.empty()) {
+                console.warn("Merge zone not found; nothing to clean up.");
+                return;
+            }
+
+            // Interrupt any ongoing transitions on the merge zone and animate it to level1's Y position
+            mergeZone.interrupt();
+            await new Promise(resolve => {
+                mergeZone
+                    .transition()
+                    .duration(500)
+                    .attr("transform", `translate(0, ${level1Y})`)
+                    .on("end", resolve);
+            });
+
+            // Count how many merged entries already exist in any level1 group
+            let existingEntriesCount = 0;
+            this.svg.selectAll('.level-group-level1 .element').each(function () {
+                existingEntriesCount++;
+            });
+
+            // Compute the new group's starting X position so it's appended to the right
+            const newGroupX = marginLeft + (existingEntriesCount * (elementSize + entrySpacing));
+
+            // Create a new level1 group for the merged entries
+            const newLevel1Group = this.svg.append("g")
+                .attr("class", "level-group-level1")
+                .attr("transform", `translate(${newGroupX}, ${level1Y})`);
+
+            // Reparent each entry from the merge zone to the new level1 group
+            mergeZone.selectAll(".element").each(function () {
+                const node = this;
+                const entry = d3.select(this);
+
+                // Compute the element’s current absolute transform
+                const oldCTM = node.getCTM();
+
+                // Get the new parent’s inverse CTM so we can convert coordinates
+                const newParentCTM = newLevel1Group.node().getCTM().inverse();
+
+                // Multiply to get the transform relative to the new level1 group
+                const newCTM = newParentCTM.multiply(oldCTM);
+
+                // Remove and reappend the element with its new transform
+                entry.remove();
+                newLevel1Group.append(() => node)
+                    .attr("transform", `matrix(${newCTM.a}, ${newCTM.b}, ${newCTM.c}, ${newCTM.d}, ${newCTM.e}, ${newCTM.f})`);
+            });
+
+            // Remove the merge zone group
+            mergeZone.remove();
+
+            // Brief pause after cleanup
             await new Promise(resolve => setTimeout(resolve, 100));
         });
     }
@@ -747,6 +1031,9 @@ const config = {
     levelHeight: 45,  // reduced to 45 (from 90)
     margin: { top: 20, right: 20, bottom: 20, left: 20 },
     print: true,
+    width: 800,
+    height: 400,
+    container: "#lsm-svg"
 };
 
 // Initialize
@@ -759,42 +1046,42 @@ const demoSequence = [
     { key: 40, value: 'a' },
     { key: 15, value: 'b' },
     { key: 20, value: 'c' },
-    
+
     // Second batch - second range (40-60)
     { key: 10, value: 'd' },
     { key: 50, value: 'e' },
     { key: 60, value: 'f' },
-    
+
     // Third batch - third range (80-95)
     { key: 80, value: 'g' },
     { key: 85, value: 'h' },
     { key: 95, value: 'i' },
-    
+
     // Fourth batch - overlaps with first range, updates values
     { key: 12, value: 'j' },
     { key: 15, value: 'k' },  // overwrites 15:b
     { key: 18, value: 'l' },
-    
+
     // Fifth batch - fills some gaps
     { key: 30, value: 'm' },  // between ranges
     { key: 70, value: 'n' },  // between ranges
     { key: 90, value: 'o' },  // in third range
-    
+
     // Sixth batch - more gap filling
     { key: 45, value: 'p' },  // in second range
     { key: 55, value: 'q' },  // in second range
     { key: 75, value: 'r' },  // between ranges
-    
+
     // Seventh batch - final updates
     { key: 15, value: 's' },  // overwrites 15:k
     { key: 50, value: 't' },  // overwrites 50:e
     { key: 85, value: 'u' },  // overwrites 85:h
-    
+
     // Eighth batch - last insertions
     { key: 25, value: 'v' },  // between ranges
     { key: 65, value: 'w' },  // between ranges
     { key: 92, value: 'x' },  // in third range
-    
+
     // Ninth batch - very last updates
     { key: 18, value: 'y' },  // overwrites 18:l
     { key: 75, value: 'z' },  // overwrites 75:r
@@ -804,15 +1091,15 @@ const demoSequence = [
 let currentIndex = 0;
 
 // Initial setup - wrap in async IIFE
-(async () => {
-    for (const { key, value } of demoSequence) {
-        await lsmTree.insert(key, value);
-        currentIndex++;
-        if (key === 50 && value === 't') {
-            break;
-        }
-    }
-})();
+// (async () => {
+//     for (const { key, value } of demoSequence) {
+//         await lsmTree.insert(key, value);
+//         currentIndex++;
+//         if (key === 50 && value === 't') {
+//             break;
+//         }
+//     }
+// })();
 
 // Event listener should also be async
 document.getElementById("insertBtn").addEventListener("click", async () => {
@@ -832,7 +1119,7 @@ document.getElementById("flushBtn").addEventListener("click", () => {
 // Test mergeSSTables function
 function testCompactLevel0() {
     console.log("=== Testing SSTable Merging ===");
-    
+
     // Create test SSTables
     const tables = [
         new SSTable([new Entry(1, 'a'), new Entry(2, 'b'), new Entry(3, 'c')]),
@@ -840,15 +1127,15 @@ function testCompactLevel0() {
         new SSTable([new Entry(3, 'c'), new Entry(4, 'd'), new Entry(5, 'e')]),
         new SSTable([new Entry(7, 'f'), new Entry(8, 'g'), new Entry(9, 'h')])
     ];
-    
+
     console.log("Input SSTables:");
     tables.forEach(sst => console.log(sst.toString()));
-    
+
     const merged = compactLevel0(tables);
-    
+
     console.log("\nMerged SSTables:");
     merged.forEach(sst => console.log(sst.toString()));
-    
+
     // Verify results
     const expected = [
         new SSTable([
@@ -857,21 +1144,21 @@ function testCompactLevel0() {
         ]),
         new SSTable([new Entry(7, 'f'), new Entry(8, 'g'), new Entry(9, 'h')])
     ];
-    
+
     const correct = merged.length === expected.length &&
-        merged.every((sst, i) => 
+        merged.every((sst, i) =>
             sst.minKey === expected[i].minKey &&
             sst.maxKey === expected[i].maxKey &&
             JSON.stringify(sst.data) === JSON.stringify(expected[i].data)
         );
-    
+
     console.log("\nTest result:", correct ? "PASSED" : "FAILED");
     console.log("==================\n");
 }
 
 function testCompactLevel02() {
     console.log("=== Testing SSTable Merging ===");
-    
+
     // Create test SSTables
     const tables = [
         new SSTable([new Entry(44, 'a'), new Entry(84, 'b')]),
@@ -885,15 +1172,15 @@ function testCompactLevel02() {
             new Entry(96, 'm')
         ])
     ];
-    
+
     console.log("Input SSTables:");
     tables.forEach(sst => console.log(sst.toString()));
-    
+
     const merged = compactLevel0(tables);
-    
+
     console.log("\nMerged SSTables:");
     merged.forEach(sst => console.log(sst.toString()));
-    
+
     // Verify results
     const expected = [
         new SSTable([
@@ -904,36 +1191,36 @@ function testCompactLevel02() {
             new Entry(96, 'm')
         ])
     ];
-    
+
     const correct = merged.length === expected.length &&
-        merged.every((sst, i) => 
+        merged.every((sst, i) =>
             sst.minKey === expected[i].minKey &&
             sst.maxKey === expected[i].maxKey &&
             JSON.stringify(sst.data) === JSON.stringify(expected[i].data)
         );
-    
+
     console.log("\nTest result:", correct ? "PASSED" : "FAILED");
     console.log("==================\n");
 }
 
 function testCompactLevel0Simple() {
     console.log("=== Testing Level 0 Compaction (Simple) ===");
-    
+
     // Create test SSTables in order of insertion (oldest to newest)
     const tables = [
         new SSTable([new Entry(1, 'a'), new Entry(2, 'b')]),
         new SSTable([new Entry(2, 'c'), new Entry(3, 'd')]),
-        new SSTable([new Entry(1, 'b')])  
+        new SSTable([new Entry(1, 'b')])
     ];
-    
+
     console.log("Input SSTables (oldest to newest):");
     tables.forEach(sst => console.log(sst.toString()));
-    
+
     const compacted = compactLevel0(tables);
-    
+
     console.log("\nCompacted SSTables:");
     compacted.forEach(sst => console.log(sst.toString()));
-    
+
     // Verify results - should keep newest values
     const expected = [
         new SSTable([
@@ -942,21 +1229,21 @@ function testCompactLevel0Simple() {
             new Entry(3, 'd')   // newest value for key 3
         ])
     ];
-    
+
     const correct = compacted.length === expected.length &&
-        compacted.every((sst, i) => 
+        compacted.every((sst, i) =>
             sst.minKey === expected[i].minKey &&
             sst.maxKey === expected[i].maxKey &&
             JSON.stringify(sst.data) === JSON.stringify(expected[i].data)
         );
-    
+
     console.log("\nTest result:", correct ? "PASSED" : "FAILED");
     console.log("==================\n");
 }
 
 async function testLSMTreeDeepLevelMerge() {
     console.log("=== Testing LSM Tree Deep Level Merge ===");
-    
+
     // Create LSM tree with small sizes to force compaction
     const testConfig = {
         maxMemtableSize: 2,  // Force frequent memtable flushes
@@ -966,28 +1253,28 @@ async function testLSMTreeDeepLevelMerge() {
         margin: { top: 20, right: 20, bottom: 20, left: 60 },
         print: false
     };
-    
+
     const tree = new LSMTree(testConfig);
-    
+
     // Insert sequence that will force compaction
-    await tree.insert(1, 'a');  
-    await tree.insert(2, 'b');  
-    await tree.insert(1, 'c');  
-    await tree.insert(3, 'd');  
-    await tree.insert(5, 'f');  
-    await tree.insert(6, 'g');  
-    await tree.insert(7, 'h');  
-    
+    await tree.insert(1, 'a');
+    await tree.insert(2, 'b');
+    await tree.insert(1, 'c');
+    await tree.insert(3, 'd');
+    await tree.insert(5, 'f');
+    await tree.insert(6, 'g');
+    await tree.insert(7, 'h');
+
     console.log("\nFinal state:");
     tree.printState();
-    
+
     // Check if level 1 exists and has data
     if (!tree.levels[1] || !tree.levels[1][0]) {
         console.log("\nTest result: FAILED - Level 1 is empty");
         console.log("==================\n");
         return false;
     }
-    
+
     // Verify level 1 has the correct values (most recent wins)
     const level1Data = tree.levels[1][0].data;
     const expected = [
@@ -995,24 +1282,24 @@ async function testLSMTreeDeepLevelMerge() {
         new Entry(2, 'b'),
         new Entry(3, 'd')
     ];
-    
+
     const correct = level1Data.length === expected.length &&
-        level1Data.every((entry, i) => 
+        level1Data.every((entry, i) =>
             entry.key === expected[i].key &&
             entry.value === expected[i].value
         );
-    
+
     console.log("\nExpected level 1 data:", expected.map(e => e.toString()).join(', '));
     console.log("Actual level 1 data:", level1Data.map(e => e.toString()).join(', '));
     console.log("\nTest result:", correct ? "PASSED" : "FAILED");
     console.log("==================\n");
-    
+
     return correct;
 }
 
 async function testLSMTreeMergeCompaction() {
     console.log("=== Testing LSM Tree Merge Compaction ===");
-    
+
     // Create LSM tree with small sizes to force compaction
     const testConfig = {
         maxMemtableSize: 2,  // Force frequent memtable flushes
@@ -1022,38 +1309,38 @@ async function testLSMTreeMergeCompaction() {
         margin: { top: 20, right: 20, bottom: 20, left: 60 },
         print: false
     };
-    
-    const tree = new LSMTree(testConfig);
-    
-    // Insert sequence that will force compaction
-    await tree.insert(1, 'a');  
-    await tree.insert(2, 'b');  
-    await tree.insert(1, 'c');  
-    await tree.insert(3, 'd');  
-    await tree.insert(5, 'f');  
-    await tree.insert(1, 'g');  
 
-    await tree.insert(7, 'h');  
-    await tree.insert(8, 'i');  
-    await tree.insert(9, 'j');  
-    await tree.insert(10, 'k');  
-    await tree.insert(11, 'l');  
-    
+    const tree = new LSMTree(testConfig);
+
+    // Insert sequence that will force compaction
+    await tree.insert(1, 'a');
+    await tree.insert(2, 'b');
+    await tree.insert(1, 'c');
+    await tree.insert(3, 'd');
+    await tree.insert(5, 'f');
+    await tree.insert(1, 'g');
+
+    await tree.insert(7, 'h');
+    await tree.insert(8, 'i');
+    await tree.insert(9, 'j');
+    await tree.insert(10, 'k');
+    await tree.insert(11, 'l');
+
     console.log("\nFinal state:");
     tree.printState();
-    
+
     // Check if level 1 exists and has data
     if (!tree.levels[1] || !tree.levels[1][0]) {
         console.log("\nTest result: FAILED - Level 1 is empty");
         console.log("==================\n");
         return false;
     }
-    
+
     // Verify level 1 has the correct values (most recent wins)
     const level1Data = tree.levels[1];
     const expected = [
         new SSTable([
-            new Entry(1, 'g'),  
+            new Entry(1, 'g'),
             new Entry(2, 'b'),
             new Entry(3, 'd'),
             new Entry(5, 'f'),
@@ -1063,7 +1350,7 @@ async function testLSMTreeMergeCompaction() {
             new Entry(8, 'i'),
         ])
     ];
-    
+
     let correct = true;
     for (let i = 0; i < level1Data.length; i++) {
         for (let j = 0; j < level1Data[i].data.length; j++) {
@@ -1073,39 +1360,39 @@ async function testLSMTreeMergeCompaction() {
             }
         }
     }
-    
+
     console.log("\nExpected level 1 data:", expected.map(e => e.toString()).join(', '));
     console.log("Actual level 1 data:", level1Data.map(e => e.toString()).join(', '));
     console.log("\nTest result:", correct ? "PASSED" : "FAILED");
     console.log("==================\n");
-    
+
     return correct;
 }
 
 async function testLSMTreeLevelMerge() {
     console.log("=== Testing LSM Tree Level Merge ===");
-    
+
     // Create test data
     const level0 = [
         new SSTable([new Entry(1, 'newer'), new Entry(2, 'newer')]),
         new SSTable([new Entry(5, 'newer')])
     ];
-    
+
     const level1 = [
         new SSTable([new Entry(1, 'old'), new Entry(2, 'old'), new Entry(3, 'old')]),
         new SSTable([new Entry(6, 'old'), new Entry(7, 'old')])
     ];
-    
+
     console.log("Level 0 (newer):");
     level0.forEach(sst => console.log(sst.toString()));
     console.log("\nLevel 1 (older):");
     level1.forEach(sst => console.log(sst.toString()));
-    
+
     const merged = mergeSSTables(level0, level1);
-    
+
     console.log("\nMerged result:");
     merged.forEach(sst => console.log(sst.toString()));
-    
+
     // Verify results
     const expected = [
         new SSTable([
@@ -1116,46 +1403,46 @@ async function testLSMTreeLevelMerge() {
         new SSTable([new Entry(5, 'newer')]),  // from level 0
         new SSTable([new Entry(6, 'old'), new Entry(7, 'old')])  // from level 1 (no overlap)
     ];
-    
+
     const correct = merged.length === expected.length &&
-        merged.every((sst, i) => 
+        merged.every((sst, i) =>
             sst.minKey === expected[i].minKey &&
             sst.maxKey === expected[i].maxKey &&
             JSON.stringify(sst.data) === JSON.stringify(expected[i].data)
         );
-    
+
     console.log("\nTest result:", correct ? "PASSED" : "FAILED");
     console.log("==================\n");
-    
+
     return correct;
 }
 
 function testMergeSSTablesNew() {
     console.log("=== Testing New SSTable Merge ===");
-    
+
     // Create test case from the example
     const l0 = [
         new SSTable([
-            new Entry(9, 'a'), 
-            new Entry(10, 'b'), 
+            new Entry(9, 'a'),
+            new Entry(10, 'b'),
             new Entry(11, 'c')
         ]),
         new SSTable([
-            new Entry(12, 'd'), 
-            new Entry(13, 'e'), 
+            new Entry(12, 'd'),
+            new Entry(13, 'e'),
             new Entry(14, 'f'),
             new Entry(15, 'g')
         ])
     ];
-    
+
     const l1 = [
         new SSTable([
-            new Entry(8, 'h'), 
-            new Entry(9, 'i'), 
+            new Entry(8, 'h'),
+            new Entry(9, 'i'),
             new Entry(10, 'j')
         ]),
         new SSTable([
-            new Entry(11, 'k'), 
+            new Entry(11, 'k'),
             new Entry(12, 'l'),
             new Entry(13, 'm'),
             new Entry(14, 'n'),
@@ -1163,21 +1450,21 @@ function testMergeSSTablesNew() {
             new Entry(16, 'p')
         ]),
         new SSTable([
-            new Entry(20, 'q'), 
+            new Entry(20, 'q'),
             new Entry(21, 'r')
         ])
     ];
-    
+
     console.log("Input L0:");
     l0.forEach(sst => console.log(sst.toString()));
     console.log("\nInput L1:");
     l1.forEach(sst => console.log(sst.toString()));
-    
+
     const merged = mergeSSTables(l0, l1);
-    
+
     console.log("\nMerged Result:");
     merged.forEach(sst => console.log(sst.toString()));
-    
+
     // Verify the results
     const expected = [
         // First merged table (8-16)
@@ -1198,17 +1485,17 @@ function testMergeSSTablesNew() {
             new Entry(21, 'r')
         ])
     ];
-    
+
     const correct = merged.length === expected.length &&
-        merged.every((sst, i) => 
+        merged.every((sst, i) =>
             sst.minKey === expected[i].minKey &&
             sst.maxKey === expected[i].maxKey &&
             JSON.stringify(sst.data) === JSON.stringify(expected[i].data)
         );
-    
+
     console.log("\nTest result:", correct ? "PASSED" : "FAILED");
     console.log("==================\n");
-    
+
     return correct;
 }
 
@@ -1220,7 +1507,7 @@ function testMergeSSTablesNew() {
         "LSM Tree Level Merge": await testLSMTreeLevelMerge(),
         "New SSTable Merge": await testMergeSSTablesNew()
     };
-    
+
     console.log("\n=== Test Summary ===");
     let allPassed = true;
     Object.entries(testResults).forEach(([testName, passed]) => {
@@ -1228,7 +1515,7 @@ function testMergeSSTablesNew() {
         if (!passed) allPassed = false;
     });
     console.log("==================");
-    
+
     if (!allPassed) {
         console.error("Some tests failed!");
     } else {

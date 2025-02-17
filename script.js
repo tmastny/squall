@@ -85,8 +85,8 @@ class SSTable {
 
 function mergeOrderedEntries(leftTable, rightTable, emitEvent) {
     const merged = [];
-    let leftIdx = 0;  // leftTable (older)
-    let rightIdx = 0;  // rightTable (newer)
+    let leftIdx = 0;  // leftTable (older, from level 1)
+    let rightIdx = 0;  // rightTable (newer, from level 0)
     
     while (leftIdx < leftTable.data.length || rightIdx < rightTable.data.length) {
         // If we've exhausted the newer table, or older key is smaller
@@ -95,11 +95,8 @@ function mergeOrderedEntries(leftTable, rightTable, emitEvent) {
              leftTable.data[leftIdx].key < rightTable.data[rightIdx].key)) {
             emitEvent('mergeStep', {
                 type: 'takeLeft',
-                entry: leftTable.data[leftIdx],
-                leftTable: leftTable,
-                rightTable: rightTable,
-                leftIndex: leftIdx,
-                rightIndex: rightIdx,
+                leftEntryIndex: leftIdx,
+                rightEntryIndex: rightIdx,
                 mergedSoFar: [...merged]
             });
             merged.push(leftTable.data[leftIdx]);
@@ -112,22 +109,15 @@ function mergeOrderedEntries(leftTable, rightTable, emitEvent) {
                 rightTable.data[rightIdx].key === leftTable.data[leftIdx].key) {
                 emitEvent('mergeStep', {
                     type: 'takeRightOverwrite',
-                    newEntry: rightTable.data[rightIdx],
-                    oldEntry: leftTable.data[leftIdx],
-                    leftTable: leftTable,
-                    rightTable: rightTable,
-                    leftIndex: leftIdx,
-                    rightIndex: rightIdx,
+                    leftEntryIndex: leftIdx,
+                    rightEntryIndex: rightIdx,
                     mergedSoFar: [...merged]
                 });
             } else {
                 emitEvent('mergeStep', {
                     type: 'takeRight',
-                    entry: rightTable.data[rightIdx],
-                    leftTable: leftTable,
-                    rightTable: rightTable,
-                    leftIndex: leftIdx,
-                    rightIndex: rightIdx,
+                    leftEntryIndex: leftIdx,
+                    rightEntryIndex: rightIdx,
                     mergedSoFar: [...merged]
                 });
             }
@@ -360,6 +350,7 @@ class LSMTreeVisualizer {
         this.tree.events.on('flushComplete', this.handleFlushComplete.bind(this));
         this.tree.events.on('memtableFlushed', this.handleMemtableFlushed.bind(this));
         this.tree.events.on('mergeGroupFound', this.handleMergeGroupFound.bind(this));
+        this.tree.events.on('mergeStep', this.handleMergeStep.bind(this));
     }
 
     setupLayout() {
@@ -397,15 +388,6 @@ class LSMTreeVisualizer {
             const { key, value, memtableState } = data;
             const elementSize = this.config.elementSize;
             const marginLeft = this.config.margin.left;
-            const marginTop = this.config.margin.top;
-            
-            // Ensure level group exists
-            let levelGroup = this.svg.select(`.level-group-memtable`);
-            if (levelGroup.empty()) {
-                levelGroup = this.svg.append("g")
-                    .attr("class", `level-group-memtable`)
-                    .attr("transform", `translate(0, ${marginTop})`);
-            }
             
             // Create a map of key to sorted index for positioning
             const sortedIndices = new Map();
@@ -413,21 +395,34 @@ class LSMTreeVisualizer {
                 sortedIndices.set(entry.key, index);
             });
             
+            // Ensure level group exists
+            let levelGroup = this.svg.select(`.level-group-memtable`);
+            if (levelGroup.empty()) {
+                levelGroup = this.svg.append("g")
+                    .attr("class", `level-group-memtable`)
+                    .attr("transform", `translate(0, ${this.config.margin.top})`);
+            }
+            
             // Update positions of existing elements based on their sorted position
-            levelGroup.selectAll(".element.level-memtable")
+            levelGroup.selectAll(".element")
                 .transition()
-                .duration(200)
+                .duration(500)  // Increased from 200 to 500
                 .attr("transform", (d, i, nodes) => {
                     const elementKey = parseInt(nodes[i].querySelector('text').textContent.split(':')[0]);
                     const sortedIndex = sortedIndices.get(elementKey);
                     const x = marginLeft + (sortedIndex * (elementSize + 10));
                     return `translate(${x}, 0)`;
+                })
+                .attr("class", (d, i, nodes) => {
+                    const elementKey = parseInt(nodes[i].querySelector('text').textContent.split(':')[0]);
+                    const sortedIndex = sortedIndices.get(elementKey);
+                    return `element memtable-entry-${sortedIndex}`;
                 });
             
-            // Add the new element at its sorted position
+            // Add the new element with its sorted index class
             const sortedIndex = sortedIndices.get(key);
             const newElement = levelGroup.append("g")
-                .attr("class", "element level-memtable")
+                .attr("class", `element memtable-entry-${sortedIndex}`)
                 .attr("transform", `translate(${marginLeft + (sortedIndex * (elementSize + 10))}, 0)`);
             
             // Add circle
@@ -491,11 +486,10 @@ class LSMTreeVisualizer {
             const level0Y = marginTop + this.config.levelHeight;
             
             // Position directly at marginLeft if it's the first SSTable
-            // Otherwise, position after the last SSTable with minimal spacing
-            const existingLevel0Groups = this.svg.selectAll('.level-group-level0');
-            const level0X = existingLevel0Groups.empty() ? 
-                marginLeft : 
-                marginLeft + (level0State.length - 1) * (bbox.width + 40); // 40px spacing between SSTables
+            // Otherwise, position after the last existing SSTable
+            const existingLevel0Groups = this.svg.selectAll('.level-group-level0 .sstable-group');
+            const numExistingSSTables = existingLevel0Groups.size();
+            const level0X = marginLeft + (numExistingSSTables * (bbox.width + 40)); // 40px spacing between SSTables
             
             // Animate the entire group moving down
             await new Promise(resolve => {
@@ -514,6 +508,8 @@ class LSMTreeVisualizer {
             this.svg.append("g")
                 .attr("class", "level-group-memtable")
                 .attr("transform", `translate(0, ${marginTop})`);
+            
+            await new Promise(resolve => setTimeout(resolve, 200));
         });
     }
 
@@ -664,6 +660,52 @@ class LSMTreeVisualizer {
             await new Promise(resolve => setTimeout(resolve, 200));
         });
     }
+
+    async handleMergeStep(data) {
+        await this.animationQueue.add(async () => {
+            const { type, leftEntryIndex, rightEntryIndex, leftTableIndex, rightTableIndex, mergedSoFar } = data;
+            const elementSize = this.config.elementSize;
+            const marginLeft = this.config.margin.left;
+            const entrySpacing = 15;
+            
+            // Calculate the target position in level 1 (based on number of entries already merged)
+            const targetX = marginLeft + (mergedSoFar.length * (elementSize + entrySpacing));
+            const level0Y = 77;
+            const level1Y = 110;
+            
+            // Highlight entries being compared
+            this.svg.select(`.level-group-level0 .entry-${leftEntryIndex}`)
+                .classed("comparing", true);
+            this.svg.select(`.level-group-level1 .entry-${rightEntryIndex}`)
+                .classed("comparing", true);
+            
+            // Animate the chosen entry
+            if (type === 'takeLeft') {
+                const leftEntry = this.svg.select(`.level-group-level0 .entry-${leftEntryIndex}`);
+                await new Promise(resolve => {
+                    leftEntry
+                        .transition()
+                        .duration(200)
+                        .attr("transform", `translate(${targetX}, ${level1Y - level0Y})`)
+                        .on("end", resolve);
+                });
+            } else {
+                const rightEntry = this.svg.select(`.level-group-level1 .entry-${rightEntryIndex}`);
+                await new Promise(resolve => {
+                    rightEntry
+                        .transition()
+                        .duration(200)
+                        .attr("transform", `translate(${targetX}, 0)`)
+                        .on("end", resolve);
+                });
+            }
+            
+            // Remove highlighting
+            this.svg.selectAll(".comparing").classed("comparing", false);
+            
+            await new Promise(resolve => setTimeout(resolve, 500));
+        });
+    }
 }
 
 // 5. Configuration and Setup
@@ -729,11 +771,24 @@ const demoSequence = [
 ];
 
 let currentIndex = 0;
-document.getElementById("insertBtn").addEventListener("click", () => {
+
+// Initial setup - wrap in async IIFE
+(async () => {
+    for (const { key, value } of demoSequence) {
+        await lsmTree.insert(key, value);
+        currentIndex++;
+        if (key === 50 && value === 't') {
+            break;
+        }
+    }
+})();
+
+// Event listener should also be async
+document.getElementById("insertBtn").addEventListener("click", async () => {
     if (currentIndex < demoSequence.length) {
         const { key, value } = demoSequence[currentIndex++];
         console.log(`Inserting ${key}:${value} (${currentIndex}/${demoSequence.length})`);
-        lsmTree.insert(key, value);
+        await lsmTree.insert(key, value);
     } else {
         console.log("Demo sequence complete!");
     }

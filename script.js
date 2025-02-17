@@ -76,6 +76,67 @@ class SSTable {
     }
 }
 
+function mergeOrderedEntries(leftTable, rightTable, emitEvent) {
+    const merged = [];
+    let leftIdx = 0;  // leftTable (older)
+    let rightIdx = 0;  // rightTable (newer)
+    
+    while (leftIdx < leftTable.data.length || rightIdx < rightTable.data.length) {
+        // If we've exhausted the newer table, or older key is smaller
+        if (rightIdx >= rightTable.data.length || 
+            (leftIdx < leftTable.data.length && 
+             leftTable.data[leftIdx].key < rightTable.data[rightIdx].key)) {
+            emitEvent('mergeStep', {
+                type: 'takeLeft',
+                entry: leftTable.data[leftIdx],
+                leftTable: leftTable,
+                rightTable: rightTable,
+                leftIndex: leftIdx,
+                rightIndex: rightIdx,
+                mergedSoFar: [...merged]
+            });
+            merged.push(leftTable.data[leftIdx]);
+            leftIdx++;
+        }
+        // If we've exhausted the older table, or newer key is smaller/equal
+        else if (leftIdx >= leftTable.data.length || 
+                 rightTable.data[rightIdx].key <= leftTable.data[leftIdx].key) {
+            if (leftIdx < leftTable.data.length && 
+                rightTable.data[rightIdx].key === leftTable.data[leftIdx].key) {
+                emitEvent('mergeStep', {
+                    type: 'takeRightOverwrite',
+                    newEntry: rightTable.data[rightIdx],
+                    oldEntry: leftTable.data[leftIdx],
+                    leftTable: leftTable,
+                    rightTable: rightTable,
+                    leftIndex: leftIdx,
+                    rightIndex: rightIdx,
+                    mergedSoFar: [...merged]
+                });
+            } else {
+                emitEvent('mergeStep', {
+                    type: 'takeRight',
+                    entry: rightTable.data[rightIdx],
+                    leftTable: leftTable,
+                    rightTable: rightTable,
+                    leftIndex: leftIdx,
+                    rightIndex: rightIdx,
+                    mergedSoFar: [...merged]
+                });
+            }
+            merged.push(rightTable.data[rightIdx]);
+            // Skip any duplicate keys in older table
+            while (leftIdx < leftTable.data.length && 
+                   leftTable.data[leftIdx].key === rightTable.data[rightIdx].key) {
+                leftIdx++;
+            }
+            rightIdx++;
+        }
+    }
+    
+    return merged;
+}
+
 function mergeSSTables(thisLevel, nextLevel, events = null) {
     if (thisLevel.length === 0) return nextLevel;
     
@@ -115,96 +176,40 @@ function mergeSSTables(thisLevel, nextLevel, events = null) {
             }
         });
         
-        if (overlappingTables.length === 0) {
-            // No overlaps, insert thisTable in order by minKey
-            const insertIndex = resultLevel.findIndex(table => table.minKey > thisTable.minKey);
-            if (insertIndex === -1) {
-                resultLevel.push(thisTable);
-            } else {
-                resultLevel.splice(insertIndex, 0, thisTable);
-            }
-        } else {
-            // Start with thisTable and merge each overlapping table in order
-            let result = thisTable;
-            
+        let result = thisTable;
+        
+        if (overlappingTables.length > 0) {
             overlappingTables.forEach(nextTable => {
                 emitEvent('mergingTables', {
                     older: result,
                     newer: nextTable
                 });
                 
-                // Merge logic here
-                const merged = [];
-                let leftIdx = 0;  // nextTable (older)
-                let rightIdx = 0;  // result (newer)
-                
-                while (leftIdx < nextTable.data.length || rightIdx < result.data.length) {
-                    // If we've exhausted the newer table, or older key is smaller
-                    if (rightIdx >= result.data.length || 
-                        (leftIdx < nextTable.data.length && 
-                         nextTable.data[leftIdx].key < result.data[rightIdx].key)) {
-                        emitEvent('mergeStep', {
-                            type: 'takeLeft',
-                            entry: nextTable.data[leftIdx],
-                            leftTable: nextTable,
-                            rightTable: result,
-                            leftIndex: leftIdx,
-                            rightIndex: rightIdx,
-                            mergedSoFar: [...merged]
-                        });
-                        merged.push(nextTable.data[leftIdx]);
-                        leftIdx++;
-                    }
-                    // If we've exhausted the older table, or newer key is smaller/equal
-                    else if (leftIdx >= nextTable.data.length || 
-                             result.data[rightIdx].key <= nextTable.data[leftIdx].key) {
-                        if (leftIdx < nextTable.data.length && 
-                            result.data[rightIdx].key === nextTable.data[leftIdx].key) {
-                            emitEvent('mergeStep', {
-                                type: 'takeRightOverwrite',
-                                newEntry: result.data[rightIdx],
-                                oldEntry: nextTable.data[leftIdx],
-                                leftTable: nextTable,
-                                rightTable: result,
-                                leftIndex: leftIdx,
-                                rightIndex: rightIdx,
-                                mergedSoFar: [...merged]
-                            });
-                        } else {
-                            emitEvent('mergeStep', {
-                                type: 'takeRight',
-                                entry: result.data[rightIdx],
-                                leftTable: nextTable,
-                                rightTable: result,
-                                leftIndex: leftIdx,
-                                rightIndex: rightIdx,
-                                mergedSoFar: [...merged]
-                            });
-                        }
-                        merged.push(result.data[rightIdx]);
-                        // Skip any duplicate keys in older table
-                        while (leftIdx < nextTable.data.length && 
-                               nextTable.data[leftIdx].key === result.data[rightIdx].key) {
-                            leftIdx++;
-                        }
-                        rightIdx++;
-                    }
-                }
-                
+                const merged = mergeOrderedEntries(nextTable, result, emitEvent);
                 result = new SSTable(merged);
             });
             
             // Remove the overlapped tables
             resultLevel = resultLevel.filter(table => !overlappingTables.includes(table));
-            
-            // Insert merged result in order by minKey
-            const insertIndex = resultLevel.findIndex(table => table.minKey > result.minKey);
-            if (insertIndex === -1) {
-                resultLevel.push(result);
-            } else {
-                resultLevel.splice(insertIndex, 0, result);
-            }
         }
+        
+        // Insert result in order by minKey
+        const insertIndex = resultLevel.findIndex(table => table.minKey > result.minKey);
+        if (insertIndex === -1) {
+            resultLevel.push(result);
+        } else {
+            resultLevel.splice(insertIndex, 0, result);
+        }
+
+        // Emit event after insertion with the final state
+        emitEvent('mergeComplete', {
+            mergedTable: result,
+            sourceLevel: 0,
+            sourceIndex: i,  // from the forEach index
+            targetLevel: 1,
+            finalIndex: insertIndex === -1 ? resultLevel.length - 1 : insertIndex,
+            targetLevelState: resultLevel  // now includes the newly inserted table
+        });
     });
     
     return resultLevel;
@@ -405,7 +410,7 @@ class LSMTreeVisualizer {
             // Update positions of existing elements based on their sorted position
             levelGroup.selectAll(".element.level-memtable")
                 .transition()
-                .duration(500)
+                .duration(200)
                 .attr("transform", (d, i, nodes) => {
                     const elementKey = parseInt(nodes[i].querySelector('text').textContent.split(':')[0]);
                     const sortedIndex = sortedIndices.get(elementKey);
@@ -424,7 +429,7 @@ class LSMTreeVisualizer {
                 .attr("class", "memory-buffer")
                 .attr("r", 0)
                 .transition()
-                .duration(500)
+                .duration(200)
                 .attr("r", elementSize / 2);
             
             // Add text
@@ -434,10 +439,10 @@ class LSMTreeVisualizer {
                 .text(`${key}:${value}`)
                 .style("opacity", 0)
                 .transition()
-                .duration(500)
+                .duration(200)
                 .style("opacity", 1);
             
-            await new Promise(resolve => setTimeout(resolve, 500));
+            await new Promise(resolve => setTimeout(resolve, 200));
         });
     }
 
@@ -473,7 +478,7 @@ class LSMTreeVisualizer {
                 .style("stroke-width", 2)
                 .style("opacity", 0)
                 .transition()
-                .duration(500)
+                .duration(200)
                 .style("opacity", 1);
             
             // Calculate target position in level 0
@@ -489,7 +494,7 @@ class LSMTreeVisualizer {
             // Animate the entire group moving down
             await new Promise(resolve => {
                 memtableGroup.transition()
-                    .duration(500)
+                    .duration(200)
                     .attr("transform", `translate(${level0X}, ${level0Y})`)
                     .on("end", resolve);
             });
@@ -528,62 +533,74 @@ class LSMTreeVisualizer {
     }
     async handleMergeComplete(data) {
         await this.animationQueue.add(async () => {
-            // Calculate vertical positions
-            const sourceY = this.config.margin.top + 
-                ((data.sourceLevel === 'memtable' ? 0 : data.sourceLevel) * this.config.levelHeight);
-            const targetY = this.config.margin.top + 
-                (data.targetLevel * this.config.levelHeight);
-            const midY = (sourceY + targetY) / 2;
-
-            // Create merged view at source level position
-            const mergedGroup = this.svg.append("g")
-                .attr("class", "merged-group")
-                .attr("transform", `translate(0, ${sourceY})`);
-
-            // Add merged elements
-            const elements = mergedGroup.selectAll(".merged-element")
-                .data(data.mergedElements)
-                .join("g")
-                .attr("class", "merged-element")
-                .attr("transform", (d, i) => {
-                    const x = this.config.margin.left + (i * (this.config.elementSize + 10));
-                    return `translate(${x}, 0)`;
-                });
-
-            elements.append("circle")
-                .attr("r", this.config.elementSize / 2)
-                .attr("class", "merging");
-
-            elements.append("text")
-                .attr("text-anchor", "middle")
-                .attr("dy", "0.3em")
-                .text(d => d);
-
-            // Animate to middle position
-            await new Promise(resolve => {
-                mergedGroup.transition()
-                    .duration(500)
-                    .attr("transform", `translate(0, ${midY})`)
-                    .on("end", resolve);
+            const { mergedTable, sourceLevel, sourceIndex, targetLevel, finalIndex, targetLevelState } = data;
+            const elementSize = this.config.elementSize;
+            const marginLeft = this.config.margin.left;
+            const sstableSpacing = 40;  // Space between SSTables
+            const entrySpacing = 10;    // Space between entries within an SSTable
+            
+            // Get exact level positions from config
+            const memtableY = this.config.margin.top;  // 32
+            const level0Y = memtableY + this.config.levelHeight;  // 77
+            const level1Y = level0Y + this.config.levelHeight;  // 122
+            
+            // Get both the SSTable box and its entries
+            const sourceGroup = this.svg.select(`.level-group-level${sourceLevel}`);
+            const sourceSSTable = sourceGroup
+                .selectAll(".sstable-group")
+                .filter((d, i) => i === sourceIndex);
+            const sourceEntries = sourceGroup
+                .selectAll(".element")
+                .filter((d, i) => i >= sourceIndex * 4 && i < (sourceIndex + 1) * 4);
+            
+            // Ensure target level group exists at the EXACT Y position
+            let targetGroup = this.svg.select(`.level-group-level${targetLevel}`);
+            if (targetGroup.empty()) {
+                targetGroup = this.svg.append("g")
+                    .attr("class", `level-group-level${targetLevel}`)
+                    .attr("transform", `translate(0, ${level1Y})`);
+            }
+            
+            // Calculate SSTable positions
+            const sstableX = marginLeft + (finalIndex * (elementSize * 4 + sstableSpacing));
+            
+            // Move both the SSTable box and its entries to the target group
+            sourceSSTable.remove();
+            sourceEntries.remove();
+            targetGroup.append(() => sourceSSTable.node());
+            sourceEntries.each(function() {
+                targetGroup.append(() => this);
             });
-
-            // Pause briefly
-            await new Promise(resolve => setTimeout(resolve, 250));
-
-            // Animate to target position
-            await new Promise(resolve => {
-                mergedGroup.transition()
-                    .duration(500)
-                    .attr("transform", `translate(0, ${targetY})`)
-                    .on("end", resolve);
-            });
-
-            // Pause briefly before cleanup
-            await new Promise(resolve => setTimeout(resolve, 250));
-
-            // Clean up
-            mergedGroup.remove();
-            this.svg.selectAll(".merging").classed("merging", false);
+            
+            // Animate both the box and entries
+            await Promise.all([
+                // Animate SSTable box
+                new Promise(resolve => {
+                    sourceSSTable
+                        .attr("transform", `translate(${marginLeft + (sourceIndex * (elementSize * 4 + sstableSpacing))}, -${level1Y - level0Y})`)
+                        .transition()
+                        .duration(200)
+                        .attr("transform", `translate(${sstableX}, 0)`)
+                        .on("end", resolve);
+                }),
+                // Animate entries
+                new Promise(resolve => {
+                    sourceEntries
+                        .attr("transform", (d, i) => {
+                            const entryX = marginLeft + (sourceIndex * (elementSize * 4 + sstableSpacing)) + (i % 4) * (elementSize + entrySpacing);
+                            return `translate(${entryX}, -${level1Y - level0Y})`;
+                        })
+                        .transition()
+                        .duration(200)
+                        .attr("transform", (d, i) => {
+                            const entryX = sstableX + (i % 4) * (elementSize + entrySpacing);
+                            return `translate(${entryX}, 0)`;
+                        })
+                        .on("end", resolve);
+                })
+            ]);
+            
+            await new Promise(resolve => setTimeout(resolve, 200));
         });
     }
 
@@ -661,19 +678,26 @@ class LSMTreeVisualizer {
             this.svg.selectAll(".merging").classed("merging", false);
             
             // Highlight source table
-            this.svg.selectAll(`.level-${data.sourceTable.level} circle`)
-                .filter((d, i, nodes) => i === data.sourceTable.index)
+            const sourceSelector = `.level-group-level${data.sourceTable.level}`;
+            
+            // Select only the SSTable at the specific index
+            this.svg.selectAll(`${sourceSelector} .sstable-group`)
+                .filter((d, i) => i === data.sourceTable.index)
+                .select("rect")  // Get the rectangle within the matched SSTable group
                 .classed("merging", true);
             
             // Highlight overlapping tables
             data.overlappingTables.forEach(table => {
-                this.svg.selectAll(`.level-${table.level} circle`)
-                    .filter((d, i, nodes) => i === table.index)
+                const targetSelector = `.level-group-level${table.level}`;
+                
+                // Select only the SSTable at the specific index
+                this.svg.selectAll(`${targetSelector} .sstable-group`)
+                    .filter((d, i) => i === table.index)
+                    .select("rect")
                     .classed("merging", true);
             });
             
-            // Pause briefly to show the highlighting
-            await new Promise(resolve => setTimeout(resolve, 500));
+            await new Promise(resolve => setTimeout(resolve, 200));
         });
     }
 }

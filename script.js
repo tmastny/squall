@@ -67,8 +67,15 @@ class Entry {
 class SSTable {
     constructor(entries) {
         this.data = [...entries].sort(Entry.compare);  // Use the static compare method
-        this.minKey = this.data[0].key;
-        this.maxKey = this.data[this.data.length - 1].key;
+        // Set min/max keys only if there is data
+        if (this.data.length > 0) {
+            this.minKey = this.data[0].key;
+            this.maxKey = this.data[this.data.length - 1].key;
+        } else {
+            // For empty tables, set min/max to null or infinity based on what makes sense
+            this.minKey = Infinity;  // Nothing can overlap with an empty table
+            this.maxKey = -Infinity; // Nothing can overlap with an empty table
+        }
     }
 
     toString() {
@@ -159,13 +166,16 @@ function mergeSSTables(thisLevel, nextLevel, events = null) {
             tablesOverlap(thisTable, nextTable)
         );
         
+        // If no overlapping tables, use an empty table
+        const tablesToMerge = overlappingTables.length > 0 ? overlappingTables : [new SSTable([])];
+        
         emitEvent('mergeGroupFound', {
             sourceTable: {
                 table: thisTable,
                 level: 0,  // thisLevel is always level 0
                 index: i   // from the forEach index
             },
-            overlappingTables: overlappingTables.map((table, idx) => ({
+            overlappingTables: tablesToMerge.map((table, idx) => ({
                 table: table,
                 level: 1,  // nextLevel is always level 1
                 index: resultLevel.indexOf(table)  // get original index in resultLevel
@@ -178,18 +188,14 @@ function mergeSSTables(thisLevel, nextLevel, events = null) {
         
         let result = thisTable;
         
-        if (overlappingTables.length > 0) {
-            overlappingTables.forEach(nextTable => {
-                emitEvent('mergingTables', {
-                    older: result,
-                    newer: nextTable
-                });
-                
-                const merged = mergeOrderedEntries(nextTable, result, emitEvent);
-                result = new SSTable(merged);
-            });
+        tablesToMerge.forEach(nextTable => {
             
-            // Remove the overlapped tables
+            const merged = mergeOrderedEntries(nextTable, result, emitEvent);
+            result = new SSTable(merged);
+        });
+        
+        // Remove the overlapped tables (if any)
+        if (overlappingTables.length > 0) {
             resultLevel = resultLevel.filter(table => !overlappingTables.includes(table));
         }
         
@@ -533,72 +539,30 @@ class LSMTreeVisualizer {
     }
     async handleMergeComplete(data) {
         await this.animationQueue.add(async () => {
-            const { mergedTable, sourceLevel, sourceIndex, targetLevel, finalIndex, targetLevelState } = data;
-            const elementSize = this.config.elementSize;
-            const marginLeft = this.config.margin.left;
-            const sstableSpacing = 40;  // Space between SSTables
-            const entrySpacing = 10;    // Space between entries within an SSTable
+            const { sourceLevel, targetLevel } = data;
             
             // Get exact level positions from config
-            const memtableY = this.config.margin.top;  // 32
-            const level0Y = memtableY + this.config.levelHeight;  // 77
-            const level1Y = level0Y + this.config.levelHeight;  // 122
+            const level1Y = 140; // From the DOM inspector
             
-            // Get both the SSTable box and its entries
+            // Get the entire source level group
             const sourceGroup = this.svg.select(`.level-group-level${sourceLevel}`);
-            const sourceSSTable = sourceGroup
-                .selectAll(".sstable-group")
-                .filter((d, i) => i === sourceIndex);
-            const sourceEntries = sourceGroup
-                .selectAll(".element")
-                .filter((d, i) => i >= sourceIndex * 4 && i < (sourceIndex + 1) * 4);
             
-            // Ensure target level group exists at the EXACT Y position
+            // Ensure target level group exists at the correct Y position
             let targetGroup = this.svg.select(`.level-group-level${targetLevel}`);
             if (targetGroup.empty()) {
                 targetGroup = this.svg.append("g")
                     .attr("class", `level-group-level${targetLevel}`)
-                    .attr("transform", `translate(0, ${level1Y})`);
+                    .attr("transform", `translate(20, ${level1Y})`);  // x=20 from DOM inspector
             }
             
-            // Calculate SSTable positions
-            const sstableX = marginLeft + (finalIndex * (elementSize * 4 + sstableSpacing));
-            
-            // Move both the SSTable box and its entries to the target group
-            sourceSSTable.remove();
-            sourceEntries.remove();
-            targetGroup.append(() => sourceSSTable.node());
-            sourceEntries.each(function() {
-                targetGroup.append(() => this);
+            // Move the entire group and its contents
+            await new Promise(resolve => {
+                sourceGroup
+                    .transition()
+                    .duration(200)
+                    .attr("transform", `translate(20, ${level1Y})`)
+                    .on("end", resolve);
             });
-            
-            // Animate both the box and entries
-            await Promise.all([
-                // Animate SSTable box
-                new Promise(resolve => {
-                    sourceSSTable
-                        .attr("transform", `translate(${marginLeft + (sourceIndex * (elementSize * 4 + sstableSpacing))}, -${level1Y - level0Y})`)
-                        .transition()
-                        .duration(200)
-                        .attr("transform", `translate(${sstableX}, 0)`)
-                        .on("end", resolve);
-                }),
-                // Animate entries
-                new Promise(resolve => {
-                    sourceEntries
-                        .attr("transform", (d, i) => {
-                            const entryX = marginLeft + (sourceIndex * (elementSize * 4 + sstableSpacing)) + (i % 4) * (elementSize + entrySpacing);
-                            return `translate(${entryX}, -${level1Y - level0Y})`;
-                        })
-                        .transition()
-                        .duration(200)
-                        .attr("transform", (d, i) => {
-                            const entryX = sstableX + (i % 4) * (elementSize + entrySpacing);
-                            return `translate(${entryX}, 0)`;
-                        })
-                        .on("end", resolve);
-                })
-            ]);
             
             await new Promise(resolve => setTimeout(resolve, 200));
         });

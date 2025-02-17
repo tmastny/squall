@@ -663,47 +663,56 @@ class LSMTreeVisualizer {
 
     async handleMergeStep(data) {
         await this.animationQueue.add(async () => {
-            const { type, leftEntryIndex, rightEntryIndex, leftTableIndex, rightTableIndex, mergedSoFar } = data;
+            const { type, leftEntryIndex, rightEntryIndex, mergedSoFar } = data;
             const elementSize = this.config.elementSize;
             const marginLeft = this.config.margin.left;
             const entrySpacing = 15;
             
             // Calculate the target position in level 1 (based on number of entries already merged)
             const targetX = marginLeft + (mergedSoFar.length * (elementSize + entrySpacing));
-            const level0Y = 77;
-            const level1Y = 110;
+            const level1Y = 140;  // Fixed Y position for level 1
             
-            // Highlight entries being compared
-            this.svg.select(`.level-group-level0 .entry-${leftEntryIndex}`)
-                .classed("comparing", true);
-            this.svg.select(`.level-group-level1 .entry-${rightEntryIndex}`)
-                .classed("comparing", true);
-            
-            // Animate the chosen entry
-            if (type === 'takeLeft') {
-                const leftEntry = this.svg.select(`.level-group-level0 .entry-${leftEntryIndex}`);
-                await new Promise(resolve => {
-                    leftEntry
-                        .transition()
-                        .duration(200)
-                        .attr("transform", `translate(${targetX}, ${level1Y - level0Y})`)
-                        .on("end", resolve);
-                });
-            } else {
-                const rightEntry = this.svg.select(`.level-group-level1 .entry-${rightEntryIndex}`);
-                await new Promise(resolve => {
-                    rightEntry
-                        .transition()
-                        .duration(200)
-                        .attr("transform", `translate(${targetX}, 0)`)
-                        .on("end", resolve);
-                });
+            // Ensure level 1 group exists
+            let level1Group = this.svg.select('.level-group-level1');
+            if (level1Group.empty()) {
+                level1Group = this.svg.append("g")
+                    .attr("class", "level-group-level1")
+                    .attr("transform", `translate(0, ${level1Y})`);
             }
             
-            // Remove highlighting
-            this.svg.selectAll(".comparing").classed("comparing", false);
+            if (type === 'takeLeft') {
+                // Move entry from level 0 to level 1
+                const entry = this.svg.select(`.level-group-level1 .memtable-entry-${leftEntryIndex}`);
+                // First animate to position
+                await new Promise(resolve => {
+                    entry
+                        .transition()
+                        .duration(500)
+                        .attr("transform", `translate(${targetX}, ${level1Y})`)
+                        .on("end", resolve);
+                });
+                // Then move to level1 group
+                entry.remove();
+                level1Group.append(() => entry.node())
+                    .attr("transform", `translate(${targetX}, 0)`);
+            } else {
+                // Move entry from level 0 to level 1
+                const entry = this.svg.select(`.level-group-level0 .memtable-entry-${rightEntryIndex}`);
+                // First animate to position
+                await new Promise(resolve => {
+                    entry
+                        .transition()
+                        .duration(500)
+                        .attr("transform", `translate(${targetX}, ${level1Y})`)
+                        .on("end", resolve);
+                });
+                // Then move to level1 group
+                entry.remove();
+                level1Group.append(() => entry.node())
+                    .attr("transform", `translate(${targetX}, 0)`);
+            }
             
-            await new Promise(resolve => setTimeout(resolve, 500));
+            await new Promise(resolve => setTimeout(resolve, 100));
         });
     }
 }

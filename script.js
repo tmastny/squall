@@ -404,41 +404,80 @@ class LSMTreeVisualizer {
         // 2. The unified data array of all entries
         //    Each item is { key, value, stage: 'memtable' | 'level0' | 'mergeZone' ... }
         this.allEntries = [];
+        this.level0Sstables = [];
+        this.level0SstableGroup = this.svg.append("g")
+            .attr("class", "sstable-level0-layer");
     }
 
-    computePosition(d, memtableItems, level0Items, mergeZoneItems) {
-        // We'll define different vertical positions or "rows" for each stage
+    computePosition(d, memtableItems, level0Items) {
+        // Hard-coded row positions:
         const memtableY = 50;
         const level0Y = 140;
-        const mergeZoneY = 200;
-
+        const entrySpacing = 10;
         const elementSize = this.config.elementSize;
-        const spacing = 10;
 
-        let indexInStage = 0;
-        let stageY = 0;
+        if (d.stage === 'memtable') {
+            // find index in memtableItems
+            const indexInStage = memtableItems.findIndex(x => x.key === d.key);
+            return { x: 50 + indexInStage * (elementSize + entrySpacing), y: memtableY };
+        }
+        else if (d.stage === 'level0') {
+            // 1. Figure out which sstable this entry belongs to
+            const sstableId = d.sstableId || 0; // fallback if undefined
 
-        // figure out indexInStage and stageY
-        switch (d.stage) {
-            case 'memtable':
-                indexInStage = memtableItems.findIndex(x => x.key === d.key);
-                stageY = memtableY;
-                break;
-            case 'level0':
-                indexInStage = level0Items.findIndex(x => x.key === d.key);
-                stageY = level0Y;
-                break;
-            case 'mergeZone':
-                indexInStage = mergeZoneItems.findIndex(x => x.key === d.key);
-                stageY = mergeZoneY;
-                break;
-            // add more if you have more stages
+            // 2. Among *all level0 items*, find how many items are in the same sstable
+            //    sorted by key or insertion order
+            const itemsInThisSstable = level0Items.filter(x => x.sstableId === sstableId);
+
+            // find index among those items
+            const indexInSstable = itemsInThisSstable.findIndex(x => x.key === d.key);
+
+            // 3. The sstable group might be horizontally spaced by sstableId
+            const sstableSpacing = 150;  // must match what you used in updateSstables
+            const baseX = 50 + sstableId * sstableSpacing;
+            const x = baseX + 10 + indexInSstable * (elementSize + entrySpacing);
+
+            return { x, y: level0Y + 15 };
+            // y + 15 if you want items inside the box, 
+            // or match how you sized the bounding rect (e.g. height=50).
         }
 
-        // Now compute X as indexInStage times some offset
-        const x = 50 + indexInStage * (elementSize + spacing);
-        const y = stageY;
-        return { x, y };
+        // handle other stages if needed...
+        return { x: 0, y: 0 };
+    }
+
+    updateSstables() {
+        // For example, each bounding box in level0 is placed in a row at y=140
+        const sstableSpacing = 150;   // how far apart each SStable is horizontally
+        const margin = 20; // or from this.config.margin.left, etc.
+
+        const selection = this.svg.selectAll(".sstable-group-level0")
+            .data(this.level0Sstables, d => d.id);
+
+        // EXIT
+        selection.exit().remove();
+
+        // ENTER
+        const enter = selection.enter()
+            .append("g")
+            .attr("class", "sstable-group-level0")
+            .attr("transform", (d, i) => `translate(${margin + i * sstableSpacing}, 140)`);
+
+        // bounding box rect
+        enter.append("rect")
+            .attr("class", "sstable-background")
+            .attr("width", 100)
+            .attr("height", 50)
+            .attr("rx", 5)
+            .attr("ry", 5);
+
+        // MERGE
+        const merged = enter.merge(selection);
+
+        // If you want to animate them repositioning if a new SStable appears, do:
+        merged.transition()
+            .duration(500)
+            .attr("transform", (d, i) => `translate(${margin + i * sstableSpacing}, 140)`);
     }
 
     updateAllEntries() {
@@ -510,143 +549,6 @@ class LSMTreeVisualizer {
             });
     }
 
-
-    updateLevel0() {
-        // Layout constants
-        const { margin, elementSize } = this.config;
-        const tableSpacing = 100;  // How far apart each SSTable is horizontally
-        const entrySpacing = 15;   // Spacing within each SSTable
-        const entryRadius = elementSize / 2;
-
-        // 1. Join SStables to .sstable-group elements
-        //    key function ensures stable mapping by sstable.id.
-        const sstableSel = this.level0Group
-            .selectAll(".sstable-group")
-            .data(this.level0Data, d => d.id);
-
-        // 2. Handle Exit (if any SSTables got removed)
-        sstableSel.exit()
-            .transition()
-            .duration(500)
-            .style("opacity", 0)
-            .remove();
-
-        // 3. Handle Enter for new SStables
-        const enterSStables = sstableSel.enter()
-            .append("g")
-            .attr("class", "sstable-group")
-            .attr("transform", (d, i) => `translate(${margin.left + i * tableSpacing}, 0)`);
-
-        // Optional: draw a bounding rectangle for each SStable
-        enterSStables.append("rect")
-            .attr("class", "sstable-background")
-            .attr("width", 80)
-            .attr("height", 50)
-            .attr("rx", 5).attr("ry", 5)
-            .style("fill", "none")
-            .style("stroke", "#666");
-
-        // Merge ENTER + UPDATE
-        const mergedSStables = sstableSel.merge(enterSStables)
-            // Animate each SStable to its new position (if reordering or more SStables appear)
-            .transition()
-            .duration(500)
-            .attr("transform", (d, i) => `translate(${margin.left + i * tableSpacing}, 0)`);
-
-        // 4. For each SStable group, do a nested data join for the entries
-        //    We assume d.data = array of entries: [ {key, value}, {key, value}, ... ]
-        mergedSStables.each(function (sstable) {
-            // `this` is the <g class="sstable-group">
-            const sstableGroup = d3.select(this);
-
-            // Join data to .sstable-entry elements
-            const entrySel = sstableGroup.selectAll(".sstable-entry")
-                .data(sstable.data, d => d.key); // use .key as unique ID
-
-            // Exit
-            entrySel.exit().remove();
-
-            // Enter
-            const enterEntries = entrySel.enter()
-                .append("g")
-                .attr("class", "sstable-entry element")
-                .attr("transform", (d, i) => `translate(${10 + i * (entrySpacing + elementSize)}, 15)`);
-
-            // A. Circle
-            enterEntries.append("circle")
-                .attr("class", "disk-level") // or some class that styles disk-level entries
-                .attr("r", entryRadius);
-
-            // B. Text
-            enterEntries.append("text")
-                .attr("text-anchor", "middle")
-                .attr("dy", "0.3em")
-                .text(d => `${d.key}:${d.value}`);
-
-            // Merge + Update to position or animate existing entries if needed
-            const mergedEntries = entrySel.merge(enterEntries)
-                .transition()
-                .duration(500)
-                .attr("transform", (d, i) => `translate(${10 + i * (entrySpacing + elementSize)}, 15)`);
-        });
-    }
-
-
-    updateMemtable() {
-        const { margin, elementSize } = this.config;
-        const entrySpacing = 10;
-
-        // Helper to compute final X position for an entry at index i
-        const computeXPos = (i) => margin.left + i * (elementSize + entrySpacing);
-
-        // 1. Perform the data join on the memtable group.
-        //    We use a key function that returns d.key so that D3 can track each entry by its unique key.
-        const sel = this.memtableGroup
-            .selectAll(".memtable-entry")
-            .data(this.memtableData, d => d.key);
-
-        // 2. Handle EXIT selection (elements that should be removed)
-        //    If you ever remove entries from the memtableData, they'll transition out here.
-        sel.exit()
-            .transition()
-            .duration(500)
-            .style("opacity", 0)
-            .remove();
-
-        // 3. Handle ENTER selection (new data items)
-        const enterSel = sel.enter().append("g")
-            .attr("class", "memtable-entry element")
-            // You could place new elements at a "start" position or off-screen if you prefer a more obvious animation.
-            // For simplicity, place them at their final position immediately.
-            .attr("transform", (d, i) => `translate(${computeXPos(i)}, 0)`);
-
-        // A. Append a circle for the new entry
-        enterSel.append("circle")
-            .attr("class", "memory-buffer")
-            .attr("r", 0)
-            .transition()
-            .duration(300)
-            .attr("r", elementSize / 2);
-
-        // B. Append text (key:value)
-        enterSel.append("text")
-            .attr("text-anchor", "middle")
-            .attr("dy", "0.3em")
-            .style("opacity", 0)
-            .text(d => `${d.key}:${d.value}`)
-            .transition()
-            .duration(300)
-            .style("opacity", 1);
-
-        // 4. Merge the ENTER + UPDATE selections for positioning updates
-        const mergedSel = sel.merge(enterSel);
-
-        // 5. Animate all existing + newly entered elements to their correct positions
-        mergedSel.transition()
-            .duration(500)
-            .attr("transform", (d, i) => `translate(${computeXPos(i)}, 0)`);
-    }
-
     async handleBeforeMemtableInsert(data) {
         // Could add pre-insertion animations here
     }
@@ -684,28 +586,40 @@ class LSMTreeVisualizer {
     async handleMemtableFlushed(data) {
         await this.animationQueue.add(async () => {
             const { memtableState, level0State } = data;
-            // level0State is now an array of SSTable instances [SSTable, SSTable, ...].
+            // level0State is an array of SStable objects
 
-            // 1. Clear memtable visually (it's now empty).
-            //    If you have an updateMemtable() that uses this.memtableData, just set it to memtableState (which is empty).
-            this.memtableData = memtableState.slice(); // Should be empty
-            this.updateMemtable(); // This shows the memtable is cleared.
+            // A. The newly created SStable is the last in level0State
+            const newSstableObject = level0State[level0State.length - 1];
+            const sstableId = level0State.length - 1;  // or a unique ID
 
-            // 2. Update our local "level0Data" with the new array of SSTables
-            //    We assume each SStable instance has { id, data: [entries] } or similar.
-            //    Convert them if needed: e.g. if SStable has .data array of entries, or if you need to adapt to your shape.
-            this.level0Data = level0State.map((sst, i) => {
+            // B. Update your bounding-box array (or object) for level0
+            //    This data structure will let you do a separate join for the rectangles
+            //    Each SStable can store an ID, plus metadata if you want to show size, timestamps, etc.
+            this.level0Sstables = level0State.map((sst, i) => {
                 return {
-                    id: i,          // or sst.id, or something unique
-                    data: sst  // array of { key, value } entries
+                    id: i,  // or sst.id if you have a unique ID in the backend
+                    // Possibly store the entire sst object or just metadata
+                    numEntries: sst.data.length
+                    // etc. 
                 };
             });
 
-            // 3. Update the visualization of level 0 with the new SStables
-            this.updateLevel0();
+            // C. Switch entries from 'memtable' to 'level0' in your single allEntries array.
+            //    We'll set sstableId so we know which bounding box they're in.
+            this.allEntries
+                .filter(d => d.stage === 'memtable')
+                .forEach(d => {
+                    d.stage = 'level0';
+                    d.sstableId = sstableId; // So we can offset them within that box
+                });
 
-            // Optionally wait a brief moment
-            await new Promise(resolve => setTimeout(resolve, 500));
+            // D. Call updateSstables to draw bounding boxes
+            this.updateSstables();
+
+            // E. Call updateAllEntries so entries animate to their new positions.
+            this.updateAllEntries();
+
+            await new Promise(r => setTimeout(r, 500));
         });
     }
 

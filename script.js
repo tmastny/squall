@@ -172,23 +172,6 @@ function mergeSSTables(thisLevel, nextLevel, events = null) {
         // If no overlapping tables, use an empty table
         const tablesToMerge = overlappingTables.length > 0 ? overlappingTables : [new SSTable([])];
 
-        emitEvent('mergeGroupFound', {
-            sourceTable: {
-                table: thisTable,
-                level: 0,  // thisLevel is always level 0
-                index: i   // from the forEach index
-            },
-            overlappingTables: tablesToMerge.map((table, idx) => ({
-                table: table,
-                level: 1,  // nextLevel is always level 1
-                index: resultLevel.indexOf(table)  // get original index in resultLevel
-            })),
-            allTablesInLevel: {
-                level0: thisLevel.length,
-                level1: resultLevel.length
-            }
-        });
-
         let result = thisTable;
 
         tablesToMerge.forEach(nextTable => {
@@ -306,14 +289,6 @@ class LSMTree {
     }
 
     async flush(level) {
-        this.events.emit('flushStart', {
-            sourceLevel: level,
-            sourceLevelState: [...this.levels[level]],
-            targetLevel: level + 1,
-            targetLevelState: [...this.levels[level + 1]]
-        });
-
-
         const mergedSSTables = mergeSSTables(this.levels[level], this.levels[level + 1], this.events);
 
         this.levels[level] = [];

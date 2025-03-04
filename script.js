@@ -138,12 +138,6 @@ function mergeOrderedEntries(leftTable, rightTable, emitEvent) {
         }
     }
 
-    // Emit cleanup event after merge is complete
-    emitEvent('cleanupMergeZone', {
-        mergedEntries: merged,
-        finalPosition: 'level1'  // Indicate where the merged result should go
-    });
-
     return merged;
 }
 
@@ -178,6 +172,12 @@ function mergeSSTables(thisLevel, nextLevel, events = null) {
 
             const merged = mergeOrderedEntries(nextTable, result, emitEvent);
             result = new SSTable(merged);
+
+            emitEvent('cleanupMergeZone', {
+                mergedEntries: merged,
+                newSstableIndex: nextLevel.length - 1,
+                level1State: nextLevel
+            });
         });
 
         // Remove the overlapped tables (if any)
@@ -382,6 +382,10 @@ class LSMTreeVisualizer {
         this.level0Sstables = [];
         this.level0SstableGroup = this.svg.append("g")
             .attr("class", "sstable-level0-layer");
+
+        this.level1Sstables = [];
+        this.level1SstableGroup = this.svg.append("g")
+            .attr("class", "sstable-level1-layer");
     }
 
     computePosition(d, memtableItems, level0Items) {
@@ -390,6 +394,7 @@ class LSMTreeVisualizer {
         const entrySpacing = 10;
         const elementSize = this.config.elementSize;
         const baseHeight = 50; // must match what we used in updateSstables()
+        const spacing = 10;
 
         if (d.stage === 'memtable') {
             const i = memtableItems.findIndex(x => x.key === d.key);
@@ -429,9 +434,114 @@ class LSMTreeVisualizer {
                 x: boxX + xInside,
                 y: boxY + yInside
             };
+        } else if (d.stage === 'mergeZoneLeft') {
+            // Place them in a row at y=250, x based on sorted index among left items
+            const leftItems = this.allEntries
+                .filter(x => x.stage === 'mergeZoneLeft')
+                .sort((a, b) => a.key - b.key);
+            const i = leftItems.findIndex(x => x.key === d.key);
+            return { x: 50 + i * (elementSize + spacing), y: 250 };
+        }
+        else if (d.stage === 'mergeZoneRight') {
+            // Another row at y=300
+            const rightItems = this.allEntries
+                .filter(x => x.stage === 'mergeZoneRight')
+                .sort((a, b) => a.key - b.key);
+            const i = rightItems.findIndex(x => x.key === d.key);
+            return { x: 50 + i * (elementSize + spacing), y: 300 };
+        }
+        else if (d.stage === 'mergeZoneFinal') {
+            // The final sorted row in the merge zone, say y=350
+            const finalItems = this.allEntries
+                .filter(x => x.stage === 'mergeZoneFinal')
+                .sort((a, b) => a.key - b.key);
+            const i = finalItems.findIndex(x => x.key === d.key);
+            return { x: 50 + i * (elementSize + spacing), y: 350 };
+        } else if (d.stage === 'level1') {
+            const sst = this.level1Sstables.find(s => s.id === d.sstableId);
+            if (!sst) return { x: 0, y: 220 }; // fallback if not found
+
+            // (Assume the box has .x, .y, .width from updateSstablesLevel1)
+            const boxX = sst.x || 50;
+            const boxY = sst.y || 220;
+            const boxWidth = sst.width || 60;
+
+            // Filter items in 'level1' with same sstableId
+            const level1Items = this.allEntries.filter(x => x.stage === 'level1');
+            const sameSstItems = level1Items.filter(x => x.sstableId === d.sstableId);
+            // Sort by key if needed
+            sameSstItems.sort((a, b) => a.key - b.key);
+
+            const index = sameSstItems.findIndex(x => x.key === d.key);
+            const count = sameSstItems.length;
+
+            const entrySpacing = 10;
+            const totalEntryWidth = count * (this.config.elementSize + entrySpacing) - entrySpacing;
+            const leftover = boxWidth - totalEntryWidth;
+            const offsetX = leftover / 2;
+
+            // Place them horizontally centered inside the bounding box
+            const xInside = offsetX + index * (this.config.elementSize + entrySpacing);
+            const finalX = boxX + xInside;
+            const finalY = boxY + (50 / 2); // center them vertically if box height=50
+
+            return { x: finalX, y: finalY };
         }
         // default
         return { x: 0, y: 0 };
+    }
+    updateSstablesLevel1() {
+        const sstableSpacing = 150;
+        const marginLeft = 50;
+        const baseHeight = 50;
+        const elementSize = this.config.elementSize;
+        const entrySpacing = 10;
+        const horizontalPadding = 20;
+
+        const sel = this.level1SstableGroup
+            .selectAll(".sstable-group-level1")
+            .data(this.level1Sstables, d => d.id);
+
+        // EXIT
+        sel.exit().remove();
+
+        // ENTER
+        const enterSel = sel.enter()
+            .append("g")
+            .attr("class", "sstable-group-level1")
+            .attr("transform", (d, i) => `translate(${marginLeft + i * sstableSpacing}, 220)`);
+
+        // A bounding box rect
+        enterSel.append("rect")
+            .attr("class", "sstable-background")
+            .attr("rx", 5)
+            .attr("ry", 5)
+            .attr("width", 60)
+            .attr("height", baseHeight);
+
+        // MERGE
+        const merged = enterSel.merge(sel);
+
+        // Transition bounding box size
+        merged.select(".sstable-background")
+            .transition()
+            .duration(300)
+            .attr("width", d => {
+                const totalEntryWidth = d.numEntries * (elementSize + entrySpacing) - entrySpacing;
+                const w = Math.max(totalEntryWidth + horizontalPadding, 60);
+                d.width = w;
+                return w;
+            })
+            .attr("height", baseHeight);
+
+        // Transition bounding box position
+        merged.transition()
+            .duration(500)
+            .attr("transform", (d, i) => {
+                d.x = marginLeft + i * sstableSpacing;
+                d.y = 220;
+                return `translate(${d.x}, ${d.y})`;
+            });
     }
 
     updateSstables() {
@@ -761,164 +871,107 @@ class LSMTreeVisualizer {
     async handleMergeStep(data) {
         await this.animationQueue.add(async () => {
             const { type, leftEntryIndex, rightEntryIndex, mergedSoFar } = data;
-            const elementSize = this.config.elementSize;
-            const entrySpacing = 15;
-            // Use the merge zone’s left offset (same as the background's x)
-            const mergeZoneMargin = this.config.margin.left;
 
-            // Select the merge zone (which should have been set up already)
-            const mergeZone = this.svg.select('.merge-zone');
-            if (mergeZone.empty()) {
-                throw new Error("Merge zone not found. Please call handleSetupMergeZone first.");
-            }
-
-            // Calculate target X based on how many elements are already in the merge zone.
-            // (Assuming that reparented entries have a class "element" on them.)
-            const existingEntries = mergeZone.selectAll(".element").size();
-            const targetX = mergeZoneMargin + (existingEntries * (elementSize + entrySpacing));
-
-            // Choose the source group based on the event type:
-            // - "takeLeft": entry is in level1 group
-            // - "takeRight": entry is in level0 group
-            let sourceGroupSelector, entryIndex;
+            // 1. If type === 'takeLeft', find the item among .stage='mergeZoneLeft' with array index=leftEntryIndex
+            //    If your code uses .key instead, you can do a direct .find(...) by key.
+            let item;
             if (type === 'takeLeft') {
-                sourceGroupSelector = '.level-group-level1';
-                entryIndex = leftEntryIndex;
+                const mergeZoneLeftItems = this.allEntries
+                    .filter(d => d.stage === 'mergeZoneLeft')
+                    .sort((a, b) => a.key - b.key);  // or however they are sorted
+                item = mergeZoneLeftItems[leftEntryIndex];
             } else {
-                sourceGroupSelector = '.level-group-level0';
-                entryIndex = rightEntryIndex;
+                // 'takeRight'
+                const mergeZoneRightItems = this.allEntries
+                    .filter(d => d.stage === 'mergeZoneRight')
+                    .sort((a, b) => a.key - b.key);
+                item = mergeZoneRightItems[rightEntryIndex];
             }
 
-            const entry = this.svg.select(`${sourceGroupSelector} .memtable-entry-${entryIndex}`);
-            if (entry.empty()) {
-                console.warn(`Entry not found for index: ${entryIndex}`);
+            if (!item) {
+                console.warn("No item found for merge step:", type, leftEntryIndex, rightEntryIndex);
                 return;
             }
 
-            // Reparenting the entry into the merge zone while preserving its visual position:
-            const node = entry.node();
-            const oldCTM = node.getCTM();
-            const newParentCTM = mergeZone.node().getCTM().inverse();
-            const newCTM = newParentCTM.multiply(oldCTM);
+            // 2. Move that item to .stage = 'mergeZoneFinal'
+            //    so it appears in the next slot of the final merged sequence
+            item.stage = 'mergeZoneFinal';
 
-            // Remove from the old group and append into the merge zone.
-            // (Make sure the entry has a persistent class "element" so we can count it later.)
-            entry.remove();
-            const reparentedEntry = mergeZone.append(() => node)
-                .attr("class", d => d ? d.className.baseVal : "element") // Preserve or add the "element" class
-                .attr("transform", `matrix(${newCTM.a}, ${newCTM.b}, ${newCTM.c}, ${newCTM.d}, ${newCTM.e}, ${newCTM.f})`);
+            // 3. The final position in the merge zone is based on how many items are in stage='mergeZoneFinal'
+            //    (i.e., mergedSoFar.length). We'll rely on computePosition to place them properly.
 
-            // Animate the entry to its target position within the merge zone.
-            await new Promise(resolve => {
-                reparentedEntry
-                    .transition()
-                    .duration(500)
-                    .attr("transform", `translate(${targetX}, 0)`)
-                    .on("end", resolve);
-            });
+            // 4. Animate by calling updateAllEntries
+            this.updateAllEntries();
 
-            // Brief pause after the merge step animation
-            await new Promise(resolve => setTimeout(resolve, 100));
+            // Short pause
+            await new Promise(r => setTimeout(r, 300));
         });
     }
 
     async handleSetupMergeZone(data) {
         await this.animationQueue.add(async () => {
             const { leftTable, rightTable, targetLength } = data;
-            const mergeZoneY = 200;  // Position below both levels
 
-            // Create merge zone group
-            let mergeZone = this.svg.select('.merge-zone');
-            if (mergeZone.empty()) {
-                mergeZone = this.svg.append("g")
-                    .attr("class", "merge-zone")
-                    .attr("transform", `translate(0, ${mergeZoneY})`);
+            // 1. Create or reveal the mergeZone bounding box if needed
+            //    e.g., you keep a small array like this.mergeZoneData = [ { id: 0, width, height } ]
+            //    or if you just do a single rect, that’s fine. 
+            //this.createOrShowMergeZoneBBox(targetLength);  // optional method
 
-                // Add background rectangle to visualize the zone
-                mergeZone.append("rect")
-                    .attr("class", "merge-zone-bg")
-                    .attr("x", this.config.margin.left - 10)
-                    .attr("y", -10)
-                    .attr("width", (targetLength * (this.config.elementSize + 10)) + 20)
-                    .attr("height", this.config.elementSize + 20)
-                    .attr("rx", 5)
-                    .attr("ry", 5)
-                    .style("fill", "none")
-                    .style("stroke", "#666")
-                    .style("stroke-width", 2)
-                    .style("opacity", 0)
-                    .transition()
-                    .duration(500)
-                    .style("opacity", 1);
-            }
+            // 2. Mark each entry from the leftTable as 'mergeZoneLeft'
+            //    We need to find them in allEntries by key (or some ID).
+            leftTable.data.forEach(ltEntry => {
+                const item = this.allEntries.find(d => d.key === ltEntry.key && d.stage === 'level1');
+                if (item) item.stage = 'mergeZoneLeft';
+            });
 
-            await new Promise(resolve => setTimeout(resolve, 500));
+            // 3. Mark each entry from the rightTable as 'mergeZoneRight'
+            rightTable.data.forEach(rtEntry => {
+                const item = this.allEntries.find(d => d.key === rtEntry.key && d.stage === 'level0');
+                if (item) item.stage = 'mergeZoneRight';
+            });
+
+            // 4. Call updateAllEntries so D3 transitions these items into the merge zone
+            this.updateAllEntries();
+
+            // Wait a bit if needed
+            await new Promise(r => setTimeout(r, 500));
         });
     }
+
     async handleCleanupMergeZone(data) {
         await this.animationQueue.add(async () => {
-            const { mergedEntries, finalPosition } = data; // Available if needed for further animations
-            const level1Y = 140;  // Final Y position for level 1
-            const marginLeft = this.config.margin.left;
-            const elementSize = this.config.elementSize;
-            const entrySpacing = 15;
+            const { mergedEntries, newSstableIndex, level1State } = data;
+            // e.g. finalPosition might be implicitly level1 if we're merging to level1
 
-            // Select the merge zone group
-            const mergeZone = this.svg.select('.merge-zone');
-            if (mergeZone.empty()) {
-                console.warn("Merge zone not found; nothing to clean up.");
-                return;
-            }
-
-            // Interrupt any ongoing transitions on the merge zone and animate it to level1's Y position
-            mergeZone.interrupt();
-            await new Promise(resolve => {
-                mergeZone
-                    .transition()
-                    .duration(500)
-                    .attr("transform", `translate(0, ${level1Y})`)
-                    .on("end", resolve);
+            // 2. For each merged entry, update our single allEntries array so that
+            //    items transition from 'mergeZoneFinal' (or any mergeZone stage) to 'level1' 
+            //    and set sstableId to the newSstableIndex.
+            mergedEntries.forEach(e => {
+                const item = this.allEntries.find(d => d.key === e.key && d.stage.startsWith('mergeZone'));
+                if (item) {
+                    item.stage = 'level1';
+                    item.sstableId = newSstableIndex; // place them in that bounding box
+                }
             });
 
-            // Count how many merged entries already exist in any level1 group
-            let existingEntriesCount = 0;
-            this.svg.selectAll('.level-group-level1 .element').each(function () {
-                existingEntriesCount++;
-            });
+            // 3. Rebuild level1Sstables from the LSMTree's level1 array
+            //    (so we can display bounding boxes).
+            //    We do the same pattern as we did for level0Sstables.
+            this.level1Sstables = level1State.map((sst, i) => ({
+                id: i,
+                numEntries: sst.data.length // or however you track the SStable's size
+                // We'll compute .width, .x, .y in updateSstablesLevel1()
+            }));
 
-            // Compute the new group's starting X position so it's appended to the right
-            const newGroupX = marginLeft + (existingEntriesCount * (elementSize + entrySpacing));
+            // 4. Update bounding boxes for level1, then update entries
+            this.updateSstablesLevel1();
+            this.updateAllEntries();
 
-            // Create a new level1 group for the merged entries
-            const newLevel1Group = this.svg.append("g")
-                .attr("class", "level-group-level1")
-                .attr("transform", `translate(${newGroupX}, ${level1Y})`);
+            // 5. Optional: remove leftover items from the merge zone if needed
+            //    Or hide the merge zone bounding box if you have one.
+            //this.hideMergeZone();
 
-            // Reparent each entry from the merge zone to the new level1 group
-            mergeZone.selectAll(".element").each(function () {
-                const node = this;
-                const entry = d3.select(this);
-
-                // Compute the element’s current absolute transform
-                const oldCTM = node.getCTM();
-
-                // Get the new parent’s inverse CTM so we can convert coordinates
-                const newParentCTM = newLevel1Group.node().getCTM().inverse();
-
-                // Multiply to get the transform relative to the new level1 group
-                const newCTM = newParentCTM.multiply(oldCTM);
-
-                // Remove and reappend the element with its new transform
-                entry.remove();
-                newLevel1Group.append(() => node)
-                    .attr("transform", `matrix(${newCTM.a}, ${newCTM.b}, ${newCTM.c}, ${newCTM.d}, ${newCTM.e}, ${newCTM.f})`);
-            });
-
-            // Remove the merge zone group
-            mergeZone.remove();
-
-            // Brief pause after cleanup
-            await new Promise(resolve => setTimeout(resolve, 100));
+            await new Promise(resolve => setTimeout(resolve, 500));
         });
     }
 }
